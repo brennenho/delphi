@@ -164,4 +164,34 @@
       }
     }
   }
+
+  .backend-updates {
+    margin-top: 20px;
+    border-top: 1px solid #ddd;
+    padding-top: 20px;
+  }
+
+  .update-list {
+    list-style: none;
+    padding: 0;
+  }
+
+  .update-item {
+    background-color: #f0f7ff;
+    border-left: 3px solid #3498db;
+    padding: 10px;
+    margin-bottom: 8px;
+    border-radius: 0 4px 4px 0;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .update-content {
+    flex: 1;
+  }
+
+  .update-time {
+    color: #777;
+    font-size: 0.8em;
+  }
 }

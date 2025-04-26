@@ -192,6 +192,18 @@ function BrowserIntentAgentComponent() {
         return;
       }
 
+      fetch("http://localhost:8000/query", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action,
+          target,
+          rawText,
+        }),
+      });
+
       const newIntent: BrowserIntent = {
         id: `intent-${now}-${Math.random().toString(36).slice(2, 7)}`,
         action,
@@ -221,34 +233,34 @@ function BrowserIntentAgentComponent() {
   }, [client]);
 
   // ─── 5) Render UI ───────────────────────────────────────────────────────────
-  const generateVoiceBars = () => {
-    const bars = [];
-    const barCount = 5;
-    for (let i = 0; i < barCount; i++) {
-      let height = currentVolume * 100;
-      if (isListening) {
-        height = Math.min(
-          100,
-          Math.max(5, height * (0.7 + Math.random() * 0.6))
-        );
-      } else {
-        height = 5;
-      }
-      bars.push(
-        <div key={i} className="voice-bar" style={{ height: `${height}%` }} />
-      );
-    }
-    return bars;
-  };
+  // const generateVoiceBars = () => {
+  //   const bars = [];
+  //   const barCount = 5;
+  //   for (let i = 0; i < barCount; i++) {
+  //     let height = currentVolume * 100;
+  //     if (isListening) {
+  //       height = Math.min(
+  //         100,
+  //         Math.max(5, height * (0.7 + Math.random() * 0.6))
+  //       );
+  //     } else {
+  //       height = 5;
+  //     }
+  //     bars.push(
+  //       <div key={i} className="voice-bar" style={{ height: `${height}%` }} />
+  //     );
+  //   }
+  //   return bars;
+  // };
 
   return (
     <div className="browser-intent-agent">
       <div className="agent-header">
         <h2>Browser Voice Assistant</h2>
-        <div className={`listening-indicator ${isListening ? "active" : ""}`}>
+        {/* <div className={`listening-indicator ${isListening ? "active" : ""}`}>
           <div className="voice-bars">{generateVoiceBars()}</div>
           <span>{isListening ? "Listening..." : "Ready"}</span>
-        </div>
+        </div> */}
       </div>
 
       <div className="instructions">

@@ -361,7 +361,10 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
 
   /* ───── Radial Card UI ───── */
   return (
-    <div className="text-center justify-items-center p-4 rounded-2xl">
+    <div
+      className="text-center justify-items-center p-4 rounded-2xl cursor-pointer"
+      onClick={toggleMicrophone}
+    >
       <div
         className="flex items-center justify-center h-full relative"
         style={{ width: "300px", height: "300px" }}
@@ -370,14 +373,12 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
           <MicOff
             size={24}
             className="text-red-700"
-            onClick={toggleMicrophone}
             style={{ cursor: "pointer", zIndex: 10 }}
           />
         ) : (
           <Mic
             size={28}
             className="text-indigo-500 animate-pulse"
-            onClick={toggleMicrophone}
             style={{ cursor: "pointer", zIndex: 10 }}
           />
         )}

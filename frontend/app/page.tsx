@@ -1,42 +1,7 @@
 "use client";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Mic } from "lucide-react";
 import { useCallback, useState } from "react";
 import AudioInput from "../components/audio-input";
-
-const HumanMessage = ({ text }: { text: string }) => (
-  <div className="flex gap-3 items-start">
-    <Avatar className="h-8 w-8">
-      <AvatarImage src="/avatars/human.png" alt="Human" />
-      <AvatarFallback>H</AvatarFallback>
-    </Avatar>
-    <div className="flex-1 space-y-2">
-      <div className="flex items-center gap-2">
-        <p className="text-sm font-medium text-zinc-900">You</p>
-      </div>
-      <div className="rounded-lg bg-zinc-100 px-3 py-2 text-sm text-zinc-800">
-        {text}
-      </div>
-    </div>
-  </div>
-);
-
-const GeminiMessage = ({ text }: { text: string }) => (
-  <div className="flex gap-3 items-start">
-    <Avatar className="h-8 w-8 bg-blue-600">
-      <AvatarImage src="/avatars/gemini.png" alt="Gemini" />
-      <AvatarFallback>AI</AvatarFallback>
-    </Avatar>
-    <div className="flex-1 space-y-2">
-      <div className="flex items-center gap-2">
-        <p className="text-sm font-medium text-zinc-900">Gemini</p>
-      </div>
-      <div className="rounded-lg bg-white border border-zinc-200 px-3 py-2 text-sm text-zinc-800">
-        {text}
-      </div>
-    </div>
-  </div>
-);
 
 export default function Home() {
   const [messages, setMessages] = useState<
@@ -51,29 +16,17 @@ export default function Home() {
   );
 
   return (
-    <>
-      <h1 className="text-4xl font-bold text-zinc-800 p-8 pb-0">
-        Multimodal Live Chat
-      </h1>
+    <main className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-b from-indigo-50 to-white w-full">
+      {/* Header with pulsing mic icon */}
+      <header className="flex items-center space-x-3">
+        <Mic className="w-12 h-12 text-black" />
+        <h1 className="text-5xl sm:text-6xl  text-gray-900">Delphi</h1>
+      </header>
 
-      <div className="flex gap-8 p-8">
+      {/* Glassmorphic card around AudioInput */}
+      <div className="w-full max-w-sm rounded-2xl">
         <AudioInput onTranscription={handleTranscription} />
-
-        <div className="w-[640px] bg-white">
-          <ScrollArea className="h-[540px] p-6">
-            <div className="space-y-6">
-              <GeminiMessage text="Hi! I'm Gemini. I can see and hear you. Let's chat!" />
-              {messages.map((message, index) =>
-                message.type === "human" ? (
-                  <HumanMessage key={`msg-${index}`} text={message.text} />
-                ) : (
-                  <GeminiMessage key={`msg-${index}`} text={message.text} />
-                )
-              )}
-            </div>
-          </ScrollArea>
-        </div>
       </div>
-    </>
+    </main>
   );
 }

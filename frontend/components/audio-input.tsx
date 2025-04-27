@@ -361,7 +361,7 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
 
   /* ───── Radial Card UI ───── */
   return (
-    <div className="border text-center justify-items-center p-4 rounded-2xl">
+    <div className="text-center justify-items-center p-4 rounded-2xl">
       <div
         className="flex items-center justify-center h-full relative"
         style={{ width: "300px", height: "300px" }}
@@ -369,14 +369,14 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
         {isStreaming ? (
           <MicOff
             size={24}
-            className="text-black dark:text-white"
+            className="text-red-700"
             onClick={toggleMicrophone}
             style={{ cursor: "pointer", zIndex: 10 }}
           />
         ) : (
           <Mic
             size={28}
-            className="text-black dark:text-white"
+            className="text-indigo-500 animate-pulse"
             onClick={toggleMicrophone}
             style={{ cursor: "pointer", zIndex: 10 }}
           />
@@ -402,7 +402,7 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
                 y1={y1}
                 x2={x2}
                 y2={y2}
-                className="stroke-current text-black dark:text-white dark:opacity-70 opacity-70"
+                className="stroke-current text-indigo-500 dark:text-white dark:opacity-70 opacity-70"
                 strokeWidth="2"
                 initial={{ x2: x1, y2: y1 }}
                 animate={{ x2, y2 }}
@@ -414,17 +414,17 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
         <span className="absolute top-48 w-[calc(100%-70%)] h-[calc(100%-70%)] bg-primary blur-[120px]"></span>
 
         {/* Status indicator */}
-        <div className="absolute -bottom-8 text-center">
+        <div className="absolute -bottom-4 text-center">
           <span className="text-sm font-medium">
             {!isStreaming
-              ? "Tap to activate"
+              ? "tap to activate"
               : connectionStatus !== "connected"
-              ? "Connecting..."
+              ? "connecting..."
               : isModelSpeaking
-              ? "Gemini is speaking"
+              ? "delphi is speaking"
               : speakingRef.current
-              ? "Listening..."
-              : "Ready"}
+              ? "listening..."
+              : "ready"}
           </span>
         </div>
       </div>

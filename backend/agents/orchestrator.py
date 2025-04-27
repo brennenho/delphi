@@ -1,10 +1,10 @@
-# orchestrator.py
-
 import os
 import re
 from collections import deque
+
 from dotenv import load_dotenv
-from uagents import Agent as UAgent, Protocol, Model, Context
+from uagents import Agent as UAgent
+from uagents import Context, Model
 
 load_dotenv()
 SEED = os.getenv("ORCHESTRATOR_SEED")
@@ -35,7 +35,7 @@ class Response(Model):
 
 # --- Orchestrator setup ---
 orchestrator = UAgent(
-    name="Orchestrator",
+    name="Zeus",
     port=8002,
     seed=SEED,
     mailbox=True,

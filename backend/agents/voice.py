@@ -1,9 +1,5 @@
-import asyncio
-import json
-import time
-from typing import Any, Dict, List, Set
+from typing import Dict, List
 
-import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from uagents import Agent, Context, Model

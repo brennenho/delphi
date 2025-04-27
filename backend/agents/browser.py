@@ -1,10 +1,11 @@
-from dotenv import load_dotenv
-import os, base64
+import base64
+import os
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from browser_use import Agent as BrowserAgent
-
-from uagents import Agent as UAgent, Model, Protocol, Context
+from dotenv import load_dotenv
+from langchain_google_genai import ChatGoogleGenerativeAI
+from uagents import Agent as UAgent
+from uagents import Context, Model
 
 load_dotenv()
 SEED = os.getenv("BROWSER_SEED")
@@ -22,7 +23,7 @@ class ScreenshotTask(Model):
     step_info: str
 
 uagent = UAgent(
-    name="BrowserAgent",
+    name="Athena",
     seed=SEED,
     mailbox=True,
     port=8001,

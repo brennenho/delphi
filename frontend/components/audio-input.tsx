@@ -102,7 +102,7 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
 
       if (isBrowserQuery) {
         console.log("Browser query detected:", isBrowserQuery);
-        await fetch("http://localhost:8004/query", {
+        await fetch("http://localhost:8000/query", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

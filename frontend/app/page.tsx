@@ -1,11 +1,9 @@
-// app/page.tsx
 "use client";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useCallback, useState } from "react";
 import AudioInput from "../components/audio-input";
 
-// Helper function to create message components
 const HumanMessage = ({ text }: { text: string }) => (
   <div className="flex gap-3 items-start">
     <Avatar className="h-8 w-8">
@@ -45,15 +43,19 @@ export default function Home() {
     { type: "human" | "gemini"; text: string }[]
   >([]);
 
-  const handleTranscription = useCallback((transcription: string) => {
-    setMessages((prev) => [...prev, { type: "gemini", text: transcription }]);
-  }, []);
+  const handleTranscription = useCallback(
+    (text: string, speaker: "human" | "gemini") => {
+      setMessages((prev) => [...prev, { type: speaker, text }]);
+    },
+    []
+  );
 
   return (
     <>
       <h1 className="text-4xl font-bold text-zinc-800 p-8 pb-0">
         Multimodal Live Chat
       </h1>
+
       <div className="flex gap-8 p-8">
         <AudioInput onTranscription={handleTranscription} />
 

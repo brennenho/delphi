@@ -48,12 +48,14 @@ function BrowserIntentAgentComponent() {
   const [isListening, setIsListening] = useState<boolean>(false);
   const [currentVolume, setCurrentVolume] = useState<number>(0);
   const { client, setConfig, volume } = useLiveAPIContext();
-  // Add a ref to track the last processed intent timestamp
+  // More aggressive debouncing strategy
   const lastIntentTimestampRef = useRef<number>(0);
-  // Add a ref to track the last processed intent text
   const lastIntentTextRef = useRef<string>("");
-  // Configure debounce threshold (in milliseconds)
-  const DEBOUNCE_THRESHOLD = 2000;
+  const lastActionTargetRef = useRef<string>("");
+  const processingIntentRef = useRef<boolean>(false);
+  // Configure debounce thresholds (in milliseconds)
+  const TEXT_DEBOUNCE_THRESHOLD = 2000; // For exact text matches
+  const ACTION_DEBOUNCE_THRESHOLD = 3500; // For same action+target
 
   // ─── 2) Tell Gemini about our function, and instruct it to call it ─────────
   useEffect(() => {
@@ -69,71 +71,58 @@ function BrowserIntentAgentComponent() {
         parts: [
           {
             text: `
-            You are an intelligent, helpful browser assistant that helps users navigate the web through natural conversation. Your primary purpose is to understand and execute browser actions through voice commands.
+            You are an intelligent browser assistant that helps users navigate the web through voice commands.
+            Your goal is to understand and process browser actions from natural conversation.
 
-            # Core Responsibilities
-            1. Accurately extract browser intents from natural language
-            2. Respond conversationally with acknowledgment and context
-            3. Handle ambiguity and clarify when needed
-            4. Structure extracted intents properly
-
-            # Understanding Browser Intents
-            For each user request, extract these components:
-            - ACTION: The specific browser operation (SEARCH, NAVIGATE, OPEN, CLICK, SCROLL, GO_BACK, REFRESH, etc.)
-            - TARGET: What the action applies to (specific URL, search query, UI element, etc.)
+            # ANTI-REPETITION - HIGHEST PRIORITY
+            - NEVER repeat the same response for any reason
+            - Users may have multiple tasks in a single request. Ensure you only call log_browser_intent() once per task.
+            - Assume the user heard your response the first time
+            - If you're unsure if an intent was processed, still only call the function once
             
-            # Response Guidelines
-            - Be conversational and natural in your responses
-            - Acknowledge what you've understood from the user
-            - Add brief contextual information when appropriate
-            - Use contractions and casual language to sound natural
-            - Keep responses concise (1-2 sentences is often sufficient)
-            - NEVER include technical terms like "BROWSER_INTENT" in your spoken responses
+            # SYSTEM UPDATES - HIGH PRIORITY
+            When receiving messages starting with "[UPDATE]:", this is critical browser state information:
+            - IMMEDIATELY incorporate this information in your response
+            - NEVER mention the "[UPDATE]:" prefix itself
+            - NEVER start the response with a filler affirmation like "Okay" or "Sure"
+            - Present this information naturally as if you just discovered it
+            - Base your next conversational turn on this update
 
-            # Intent Extraction Rules
-            - Always call log_browser_intent() for valid browser requests
+            # Response Style
+            - Use FUTURE TENSE for actions ("I'll search for..." NOT "Searching for...")
+            - Keep responses brief (1 sentence when possible)
+            - Don't say "I've understood" or "I'll help you with that" - just do it
+            - Focus on what you're about to do, not what you've done
+            
+            # Browser Intent Extraction
+            For each user request, extract:
+            - ACTION: The browser operation (SEARCH, NAVIGATE, OPEN, etc.)
+            - TARGET: What the action applies to (URL, search query, element, etc.)
+            
+            # Function Usage
+            - Call log_browser_intent() EXACTLY ONCE for each user task
             - For ambiguous requests, ask a simple clarifying question
-            - If multiple intents are detected, prioritize the primary one first
-            - For non-browser requests, respond normally without calling the function
+            - For non-browser requests, respond without calling the function
 
-            # Examples of Good Interactions:
-
-            Example 1:
-            User: "I want to look up the weather forecast for Chicago this weekend"
-            Response: "I'll search for Chicago's weekend weather forecast for you."
-            Function: log_browser_intent({action: "SEARCH", target: "weather forecast Chicago this weekend", rawText: "I want to look up the weather forecast for Chicago this weekend"})
-
-            Example 2:
-            User: "Can you take me to Amazon to look for running shoes?"
-            Response: "Sure, I'll open Amazon and search for running shoes."
-            Function: log_browser_intent({action: "NAVIGATE_AND_SEARCH", target: "Amazon: running shoes", rawText: "Can you take me to Amazon to look for running shoes?"})
-
-            Example 3: 
-            User: "I'm trying to find a good pizza place"
-            Response: "I'll search for good pizza places near you."
-            Function: log_browser_intent({action: "SEARCH", target: "good pizza places near me", rawText: "I'm trying to find a good pizza place"})
-
-            Example 4:
-            User: "Go back to the previous page"
-            Response: "Going back to the previous page."
-            Function: log_browser_intent({action: "GO_BACK", target: "previous page", rawText: "Go back to the previous page"})
-
-            Example 5:
+            # Examples:
+            User: "Look up weather for Chicago"
+            Response: "I'll check Chicago's weather."
+            Function: log_browser_intent({action: "SEARCH", target: "weather Chicago", rawText: "Look up weather for Chicago"})
+            
+            User: "Search Amazon for tennis shoes"
+            Response: "I'll search Amazon for tennis shoes."
+            Function: log_browser_intent({action: "NAVIGATE", target: "Amazon", rawText: "Search Amazon for tennis shoes"})
+            Function: log_browser_intent({action: "SEARCH", target: "tennis shoes", rawText: "Search Amazon for tennis shoes"})
+            System: "[UPDATE]: Amazon is open. There is a list of available shoes."
+            Response: "I found a list of available shoes on Amazon. Would you like to see them?"
+            
+            User: "Go back"
+            Response: "I'll go back to the previous page."
+            Function: log_browser_intent({action: "GO_BACK", target: "previous page", rawText: "Go back"})
+            
             User: "What's the capital of France?"
             Response: "The capital of France is Paris. Would you like me to search for more information about Paris?"
-            No function call needed for simple information requests.
-
-            Example 6:
-            User: "Open my Gmail"
-            Response: "Opening Gmail for you."
-            Function: log_browser_intent({action: "NAVIGATE", target: "Gmail", rawText: "Open my Gmail"})
-
-            # Handling Edge Cases
-            - For unclear requests: "I'm not sure if you want to search or navigate. Could you clarify what you'd like to do?"
-            - For non-browser tasks: Respond helpfully without calling the function
-            - For multi-step requests: Break down into primary actions and acknowledge the sequence
-
-            Always call the log_browser_intent function during your response when you detect a valid browser action intent.`,
+            No function call for information requests.`,
           },
         ],
       },
@@ -152,7 +141,7 @@ function BrowserIntentAgentComponent() {
 
   // ─── 4) Listen for Gemini function-calls and log intents ───────────────────
   useEffect(() => {
-    const onToolCall = (toolCall: ToolCall) => {
+    const onToolCall = async (toolCall: ToolCall) => {
       // Find our specific function invocation
       const fc = toolCall.functionCalls.find(
         (f) => f.name === logIntentDeclaration.name
@@ -166,33 +155,84 @@ function BrowserIntentAgentComponent() {
         rawText: string;
       };
 
-      // Check if this is a duplicate intent (same text within threshold time)
+      // Enhanced duplicate detection logic
       const now = Date.now();
-      const isDuplicate =
-        rawText === lastIntentTextRef.current &&
-        now - lastIntentTimestampRef.current < DEBOUNCE_THRESHOLD;
+      const actionTargetKey = `${action}:${target}`;
 
-      // Update refs for the next call
-      lastIntentTextRef.current = rawText;
-      lastIntentTimestampRef.current = now;
-
-      // Exit if duplicate
-      if (isDuplicate) {
-        console.log("Skipping duplicate intent:", rawText);
-
-        // Still acknowledge to the LLM that the call succeeded
+      // Check if we're still processing a previous intent
+      if (processingIntentRef.current) {
+        console.log("Still processing previous intent, skipping:", rawText);
         client.sendToolResponse({
           functionResponses: [
             {
               id: fc.id,
-              response: { output: { success: true } },
+              response: { output: { success: true, skipped: true } },
             },
           ],
         });
         return;
       }
 
-      fetch("http://localhost:8000/query", {
+      // Check for three types of duplicates:
+      // 1. Exact same text (most strict)
+      // 2. Same action+target combo (less strict but catches rephrased commands)
+      // 3. Rapid succession of any commands (throttling)
+      const isExactDuplicate =
+        rawText === lastIntentTextRef.current &&
+        now - lastIntentTimestampRef.current < TEXT_DEBOUNCE_THRESHOLD;
+
+      const isActionTargetDuplicate =
+        actionTargetKey === lastActionTargetRef.current &&
+        now - lastIntentTimestampRef.current < ACTION_DEBOUNCE_THRESHOLD;
+
+      const isThrottled = now - lastIntentTimestampRef.current < 1000;
+
+      const isDuplicate =
+        isExactDuplicate || isActionTargetDuplicate || isThrottled;
+
+      // Log the specific type of duplicate for debugging
+      if (isDuplicate) {
+        console.log(
+          `Skipping duplicate intent: ${
+            isExactDuplicate
+              ? "exact text match"
+              : isActionTargetDuplicate
+              ? "action+target match"
+              : "throttled"
+          }`,
+          { rawText, action, target }
+        );
+
+        // Still acknowledge to the LLM that the call succeeded
+        client.sendToolResponse({
+          functionResponses: [
+            {
+              id: fc.id,
+              response: {
+                output: {
+                  success: true,
+                  duplicateType: isExactDuplicate
+                    ? "exact"
+                    : isActionTargetDuplicate
+                    ? "actionTarget"
+                    : "throttled",
+                },
+              },
+            },
+          ],
+        });
+        return;
+      }
+
+      // Set processing flag to true to prevent parallel processing of intents
+      processingIntentRef.current = true;
+
+      // Update refs for the next call
+      lastIntentTextRef.current = rawText;
+      lastActionTargetRef.current = actionTargetKey;
+      lastIntentTimestampRef.current = now;
+
+      const response = await fetch("http://localhost:8000/query", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -203,6 +243,16 @@ function BrowserIntentAgentComponent() {
           rawText,
         }),
       });
+
+      if (!response.ok) {
+        console.error("Failed to log intent:", response.statusText);
+        return;
+      }
+
+      const responseText = await response.text();
+
+      console.log("Sending response to Gemini:", responseText);
+      client.send({ text: `[UPDATE]: ${responseText}` });
 
       const newIntent: BrowserIntent = {
         id: `intent-${now}-${Math.random().toString(36).slice(2, 7)}`,
@@ -224,6 +274,12 @@ function BrowserIntentAgentComponent() {
           },
         ],
       });
+
+      // Release the processing lock after a short delay to ensure any response
+      // from the LLM has time to be processed
+      setTimeout(() => {
+        processingIntentRef.current = false;
+      }, 1500);
     };
 
     client.on("toolcall", onToolCall);

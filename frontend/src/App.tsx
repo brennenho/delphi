@@ -36,6 +36,7 @@ function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   // either the screen capture, the video or null, if null we hide it
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
+   console.log("API_KEY", API_KEY)
 
   return (
     <div className="App">

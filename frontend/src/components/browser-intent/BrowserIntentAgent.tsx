@@ -47,7 +47,7 @@ function BrowserIntentAgentComponent() {
   const [intents, setIntents] = useState<BrowserIntent[]>([]);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [currentVolume, setCurrentVolume] = useState<number>(0);
-  const { client, setConfig, volume } = useLiveAPIContext();
+  const { client, setConfig, volume, muted, setMuted } = useLiveAPIContext();
   // More aggressive debouncing strategy
   const lastIntentTimestampRef = useRef<number>(0);
   const lastIntentTextRef = useRef<string>("");
@@ -56,6 +56,13 @@ function BrowserIntentAgentComponent() {
   // Configure debounce thresholds (in milliseconds)
   const TEXT_DEBOUNCE_THRESHOLD = 2000; // For exact text matches
   const ACTION_DEBOUNCE_THRESHOLD = 3500; // For same action+target
+
+  // Auto-mute functionality
+  const [autoMuteEnabled, setAutoMuteEnabled] = useState<boolean>(true);
+  const silenceTimerRef = useRef<number | null>(null);
+  const silenceThreshold = 0.05; // Volume threshold to consider as silence
+  const silenceDuration = 2000; // Duration of silence before muting (milliseconds)
+  const lastVolumeTimeRef = useRef<number>(Date.now());
 
   // ─── 2) Tell Gemini about our function, and instruct it to call it ─────────
   useEffect(() => {
@@ -72,56 +79,66 @@ function BrowserIntentAgentComponent() {
           {
             text: `
             You are an intelligent browser assistant that helps users navigate the web through voice commands.
-            Your goal is to understand and process browser actions from natural conversation.
+            Your goal is to understand and process browser actions from natural conversation with zero speech redundancy.
 
-            # ANTI-REPETITION - HIGHEST PRIORITY
-            - NEVER repeat the same response for any reason
-            - Users may have multiple tasks in a single request. Ensure you only call log_browser_intent() once per task.
-            - Assume the user heard your response the first time
-            - If you're unsure if an intent was processed, still only call the function once
-            
-            # SYSTEM UPDATES - HIGH PRIORITY
+            # ZERO REPETITION - ABSOLUTE HIGHEST PRIORITY
+            - NEVER repeat words, phrases, or concepts within the same response
+            - Each statement must contain 100% new information
+            - If uncertain whether content was delivered, assume it was and NEVER repeat it
+            - After processing a request, immediately move to the next unique response
+            - Use distinct vocabulary and phrasing for each sentence
+            - AVOID echoing user words back unless absolutely necessary
+            - Skip all acknowledgment phrases (like "okay," "sure," "got it")
+
+            # SPEECH COHERENCE - HIGH PRIORITY
+            - Use complete, self-contained sentences with natural flow
+            - Start sentences directly with key information
+            - Use simple punctuation (periods, commas only)
+            - Keep sentences under 15 words for optimal delivery
+            - Create clear speech boundaries between concepts
+
+            # SYSTEM UPDATES HANDLING
             When receiving messages starting with "[UPDATE]:", this is critical browser state information:
-            - IMMEDIATELY incorporate this information in your response
-            - NEVER mention the "[UPDATE]:" prefix itself
-            - NEVER start the response with a filler affirmation like "Okay" or "Sure"
-            - Present this information naturally as if you just discovered it
-            - Base your next conversational turn on this update
+            - Begin response with the new information directly (no prefix)
+            - Skip all transition phrases ("I see that," "I notice")
+            - Present as newly discovered fact without referencing update process
+            - Never reference having received an update
+            - Base conversation solely on this new information
 
             # Response Style
-            - Use FUTURE TENSE for actions ("I'll search for..." NOT "Searching for...")
-            - Keep responses brief (1 sentence when possible)
-            - Don't say "I've understood" or "I'll help you with that" - just do it
-            - Focus on what you're about to do, not what you've done
-            
+            - Use FUTURE TENSE for actions ("I'll search" NOT "Searching")
+            - One concise sentence per action when possible
+            - Skip all preambles and acknowledgments
+            - State actions without explaining them
+
             # Browser Intent Extraction
-            For each user request, extract:
+            For each request, extract:
             - ACTION: The browser operation (SEARCH, NAVIGATE, OPEN, etc.)
             - TARGET: What the action applies to (URL, search query, element, etc.)
-            
+
             # Function Usage
-            - Call log_browser_intent() EXACTLY ONCE for each user task
-            - For ambiguous requests, ask a simple clarifying question
-            - For non-browser requests, respond without calling the function
+            - Call log_browser_intent() EXACTLY ONCE per task
+            - With ambiguous requests, ask one direct question
+            - For non-browser requests, respond without function calls
 
             # Examples:
             User: "Look up weather for Chicago"
             Response: "I'll check Chicago's weather."
             Function: log_browser_intent({action: "SEARCH", target: "weather Chicago", rawText: "Look up weather for Chicago"})
-            
+
             User: "Search Amazon for tennis shoes"
             Response: "I'll search Amazon for tennis shoes."
             Function: log_browser_intent({action: "NAVIGATE", target: "Amazon", rawText: "Search Amazon for tennis shoes"})
             Function: log_browser_intent({action: "SEARCH", target: "tennis shoes", rawText: "Search Amazon for tennis shoes"})
             System: "[UPDATE]: Amazon is open. There is a list of available shoes."
-            Response: "I found a list of available shoes on Amazon. Would you like to see them?"
-            
+            Response: "Tennis shoes available on Amazon. See anything you like?"
+
             User: "Go back"
-            Response: "I'll go back to the previous page."
+            Response: "I'll go back."
             Function: log_browser_intent({action: "GO_BACK", target: "previous page", rawText: "Go back"})
-            
+
             User: "What's the capital of France?"
-            Response: "The capital of France is Paris. Would you like me to search for more information about Paris?"
+            Response: "Paris. Want more information about it?"
             No function call for information requests.`,
           },
         ],
@@ -137,7 +154,40 @@ function BrowserIntentAgentComponent() {
   useEffect(() => {
     setCurrentVolume(volume);
     setIsListening(volume > 0.01);
-  }, [volume]);
+
+    // Auto-mute functionality
+    if (autoMuteEnabled) {
+      const now = Date.now();
+      
+      // If volume is above threshold, consider as speaking
+      if (volume > silenceThreshold) {
+        lastVolumeTimeRef.current = now;
+        
+        // If mic was muted, unmute it
+        if (muted) {
+          setMuted(false);
+          console.log("Auto-unmuting microphone due to detected speech");
+        }
+        
+        // Clear any existing silence timer
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = null;
+        }
+      } 
+      // If volume is below threshold and mic is not muted, start silence timer
+      else if (!muted && now - lastVolumeTimeRef.current > 500) {
+        if (!silenceTimerRef.current) {
+          silenceTimerRef.current = window.setTimeout(() => {
+            // Mute the mic after silence duration
+            setMuted(true);
+            console.log("Auto-muting microphone due to silence detection");
+            silenceTimerRef.current = null;
+          }, silenceDuration);
+        }
+      }
+    }
+  }, [volume, autoMuteEnabled, setMuted, muted]);
 
   // ─── 4) Listen for Gemini function-calls and log intents ───────────────────
   useEffect(() => {
@@ -317,6 +367,16 @@ function BrowserIntentAgentComponent() {
           <div className="voice-bars">{generateVoiceBars()}</div>
           <span>{isListening ? "Listening..." : "Ready"}</span>
         </div> */}
+        <div className="auto-mute-toggle">
+          <label>
+            <input
+              type="checkbox"
+              checked={autoMuteEnabled}
+              onChange={() => setAutoMuteEnabled(!autoMuteEnabled)}
+            />
+            Auto-mute after speaking
+          </label>
+        </div>
       </div>
 
       <div className="instructions">

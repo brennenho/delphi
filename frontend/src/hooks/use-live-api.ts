@@ -19,7 +19,7 @@ import {
   MultimodalLiveAPIClientConnection,
   MultimodalLiveClient,
 } from "../lib/multimodal-live-client";
-import { LiveConfig } from "../multimodal-live-types";
+import { LiveConfig, isModelTurn, ModelTurn } from "../multimodal-live-types";
 import { AudioStreamer } from "../lib/audio-streamer";
 import { audioContext } from "../lib/utils";
 import VolMeterWorket from "../lib/worklets/vol-meter";
@@ -32,6 +32,8 @@ export type UseLiveAPIResults = {
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   volume: number;
+  setMuted: (muted: boolean) => void;
+  muted: boolean;
 };
 
 export function useLiveAPI({
@@ -49,6 +51,7 @@ export function useLiveAPI({
     model: "models/gemini-2.0-flash-exp",
   });
   const [volume, setVolume] = useState(0);
+  const [muted, setMuted] = useState(false);
 
   // register audio for streaming server -> speakers
   useEffect(() => {
@@ -76,16 +79,35 @@ export function useLiveAPI({
     const onAudio = (data: ArrayBuffer) =>
       audioStreamerRef.current?.addPCM16(new Uint8Array(data));
 
+    // Handle internal commands for muting/unmuting using the content event
+    const onContent = (content: any) => {
+      if (isModelTurn(content)) {
+        const modelTurn = content as ModelTurn;
+        const text = modelTurn.modelTurn.parts[0]?.text;
+        if (text) {
+          if (text === "[INTERNAL_COMMAND]: MUTE_MIC") {
+            setMuted(true);
+            console.log("Auto-muting microphone due to silence detection");
+          } else if (text === "[INTERNAL_COMMAND]: UNMUTE_MIC") {
+            setMuted(false);
+            console.log("Auto-unmuting microphone due to detected speech");
+          }
+        }
+      }
+    };
+
     client
       .on("close", onClose)
       .on("interrupted", stopAudioStreamer)
-      .on("audio", onAudio);
+      .on("audio", onAudio)
+      .on("content", onContent);
 
     return () => {
       client
         .off("close", onClose)
         .off("interrupted", stopAudioStreamer)
-        .off("audio", onAudio);
+        .off("audio", onAudio)
+        .off("content", onContent);
     };
   }, [client]);
 
@@ -112,5 +134,7 @@ export function useLiveAPI({
     connect,
     disconnect,
     volume,
+    setMuted,
+    muted,
   };
 }

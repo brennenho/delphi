@@ -19,6 +19,9 @@ interface AudioInputProps {
   onTranscription: (text: string, speaker: "human" | "gemini") => void;
 }
 
+// Utility to give the worklet a moment to deliver its last buffer
+const wait = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+
 export default function AudioInput({ onTranscription }: AudioInputProps) {
   /* ───── refs & state ───── */
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -62,63 +65,73 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
   }, []);
 
   const cleanupBackendWs = useCallback(() => {
-    if (backendWsRef.current) {
-      backendWsRef.current.close();
-      backendWsRef.current = null;
-      setBackendConnected(false);
-    }
+    backendWsRef.current?.close();
+    backendWsRef.current = null;
+    setBackendConnected(false);
   }, []);
 
   const sendToGemini = (b64: string) =>
     geminiWsRef.current?.sendMediaChunk(b64, "audio/pcm");
 
-  /* ───── flush & transcribe ───── */
-  const flushUserAudio = useCallback(async () => {
-    if (!speakingRef.current || userChunksRef.current.length === 0) return;
-
-    const total = userChunksRef.current.reduce((s, c) => s + c.length, 0);
-    const merged = new Uint8Array(total);
-    userChunksRef.current.reduce(
-      (off, c) => (merged.set(c, off), off + c.length),
-      0
-    );
-    userChunksRef.current = [];
-    speakingRef.current = false;
-
-    try {
-      const wav = await pcmToWav(Base64.fromUint8Array(merged), SAMPLE_RATE);
-      const text = await transcriptionSvc.current.transcribeAudio(
-        wav,
-        "audio/wav"
-      );
-
-      onTranscription(text, "human");
-
-      const isBrowserQuery = await transcriptionSvc.current.isBrowserQuery(
-        text
-      );
-
-      if (isBrowserQuery) {
-        console.log("Browser query detected:", isBrowserQuery);
-        await fetch("http://localhost:8000/query", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            text: text,
-          }),
-        });
+  /* ───── flush & transcribe (now **audio‑only** to Gemini) ───── */
+  const flushUserAudio = useCallback(
+    async (force = false) => {
+      if (userChunksRef.current.length === 0) {
+        speakingRef.current = false;
+        return;
       }
-    } catch (err) {
-      console.error("[UserTranscription] error:", err);
-    }
-  }, [onTranscription]);
+
+      const total = userChunksRef.current.reduce((acc, c) => acc + c.length, 0);
+      const merged = new Uint8Array(total);
+      userChunksRef.current.reduce(
+        (off, c) => (merged.set(c, off), off + c.length),
+        0
+      );
+
+      // *** Removed duplicate send to Gemini ***
+      // Gemini already received the incremental PCM chunks in realtime.
+      // Sending the merged buffer again created a second copy of the query.
+
+      userChunksRef.current = [];
+      const wasSpeaking = speakingRef.current || force;
+      speakingRef.current = false;
+
+      try {
+        if (total > 0 && wasSpeaking) {
+          const wav = await pcmToWav(
+            Base64.fromUint8Array(merged),
+            SAMPLE_RATE
+          );
+          const text = await transcriptionSvc.current.transcribeAudio(
+            wav,
+            "audio/wav"
+          );
+
+          if (text.trim()) {
+            onTranscription(text, "human");
+
+            const isBrowserQuery =
+              await transcriptionSvc.current.isBrowserQuery(text);
+            if (isBrowserQuery) {
+              await fetch("http://localhost:8000/query", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text }),
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[UserTranscription] error:", err);
+      }
+    },
+    [onTranscription]
+  );
 
   /* ───── Gemini callback ───── */
   const handleGeminiText = useCallback(
     async (geminiText: string) => {
-      await flushUserAudio(); // finish any pending utterance first
+      await flushUserAudio();
       onTranscription(geminiText, "gemini");
     },
     [flushUserAudio, onTranscription]
@@ -126,19 +139,19 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
 
   /* ───── mic toggle ───── */
   const toggleMicrophone = async () => {
+    // 🔇 turning off ---------------------------------------------------------
     if (isStreaming && stream) {
-      setIsStreaming(false);
-      cleanupWs();
-      cleanupBackendWs();
-      cleanupAudio();
+      await wait(250); // let last worklet message arrive
+      await flushUserAudio(true);
       stream.getTracks().forEach((t) => t.stop());
       setStream(null);
-      speakingRef.current = false;
-      userChunksRef.current = [];
-      resetBars();
+      setIsStreaming(false);
+      workletRef.current?.disconnect();
+      workletRef.current = null;
       return;
     }
 
+    // 🎙️ turning on ----------------------------------------------------------
     try {
       const s = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -149,33 +162,31 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
           noiseSuppression: true,
         },
       });
-      audioCtxRef.current = new AudioContext({ sampleRate: SAMPLE_RATE });
+      if (!audioCtxRef.current)
+        audioCtxRef.current = new AudioContext({ sampleRate: SAMPLE_RATE });
       setStream(s);
       setIsStreaming(true);
     } catch (err) {
       console.error("getUserMedia failed:", err);
-      cleanupAudio();
     }
   };
 
-  // Update bars based on audio level
-  const updateBars = useCallback((volume: number) => {
-    setBars(bars.map(() => Math.random() * volume * 0.5));
-  }, []);
+  /* ───── bars visualiser helpers ───── */
+  const updateBars = useCallback(
+    (vol: number) => setBars((b) => b.map(() => Math.random() * vol * 0.5)),
+    []
+  );
+  const resetBars = useCallback(() => setBars(Array(50).fill(0)), []);
 
-  // Reset bars when audio is not streaming
-  const resetBars = useCallback(() => {
-    setBars(Array(50).fill(0));
-  }, []);
-
-  // Update visualizer bars based on audio levels
   useEffect(() => {
-    if (isStreaming) {
-      const activeLevel = isModelSpeaking ? outputAudioLevel : audioLevel;
-      updateBars(activeLevel);
-    } else {
-      resetBars();
-    }
+    const level = isStreaming
+      ? isModelSpeaking
+        ? outputAudioLevel
+        : audioLevel
+      : isModelSpeaking
+      ? outputAudioLevel
+      : 0;
+    level > 0 ? updateBars(level) : resetBars();
   }, [
     audioLevel,
     outputAudioLevel,
@@ -185,13 +196,8 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
     resetBars,
   ]);
 
-  /* ───── WebSocket setup (runs once per start/stop) ───── */
+  /* ───── WebSocket setup ───── */
   useEffect(() => {
-    if (!isStreaming) {
-      setConnectionStatus("disconnected");
-      return;
-    }
-
     setConnectionStatus("connecting");
     geminiWsRef.current = new GeminiWebSocket(
       () => {},
@@ -208,76 +214,38 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
     );
     geminiWsRef.current.connect();
 
-    return () => {
-      cleanupWs();
-      setIsWebSocketReady(false);
-    };
-  }, [isStreaming, handleGeminiText, cleanupWs]);
+    ttsServiceRef.current = new TtsService((isPlay) => {
+      if (!isPlay && geminiWsRef.current && !modelSpeakingRef.current)
+        geminiWsRef.current.resumeAudio();
+    });
 
-  /* ───── Backend WebSocket setup ───── */
-  useEffect(() => {
-    if (!isStreaming) {
-      cleanupBackendWs();
-      return;
-    }
-
-    if (!ttsServiceRef.current) {
-      ttsServiceRef.current = new TtsService((isPlaying) => {
-        if (!isPlaying && geminiWsRef.current && !modelSpeakingRef.current) {
-          geminiWsRef.current.resumeAudio();
-        }
-      });
-    }
-
-    const backendUrl = "ws://localhost:8004/ws/1";
-    const ws = new WebSocket(backendUrl);
-
-    ws.onopen = () => {
-      console.log("[Backend WebSocket] Connected");
-      setBackendConnected(true);
-    };
-
-    ws.onmessage = async (event) => {
+    const ws = new WebSocket("ws://localhost:8004/ws/1");
+    ws.onopen = () => setBackendConnected(true);
+    ws.onmessage = async ({ data }) => {
       try {
-        const data = JSON.parse(event.data);
-
-        if (data.message) {
-          console.log("[Backend WebSocket] Received message:", data.message);
-
-          if (geminiWsRef.current) {
-            geminiWsRef.current.pauseAudio();
-          }
-
-          if (ttsServiceRef.current) {
-            await ttsServiceRef.current.speak(data.message);
-
-            if (geminiWsRef.current) {
-              geminiWsRef.current.resumeAudio();
-            }
-          }
+        const { message } = JSON.parse(data);
+        if (message) {
+          geminiWsRef.current?.pauseAudio();
+          await ttsServiceRef.current?.speak(message);
+          geminiWsRef.current?.resumeAudio();
         }
-      } catch (error) {
-        console.error("[Backend WebSocket] Error processing message:", error);
+      } catch (e) {
+        console.error("[Backend WS]", e);
       }
     };
-
-    ws.onerror = (error) => {
-      console.error("[Backend WebSocket] Error:", error);
-    };
-
-    ws.onclose = () => {
-      console.log("[Backend WebSocket] Disconnected");
-      setBackendConnected(false);
-    };
-
+    ws.onclose = () => setBackendConnected(false);
+    ws.onerror = console.error;
     backendWsRef.current = ws;
 
     return () => {
+      cleanupWs();
+      setIsWebSocketReady(false);
       cleanupBackendWs();
+      cleanupAudio();
     };
-  }, [isStreaming, onTranscription, cleanupBackendWs]);
+  }, [handleGeminiText, cleanupWs, cleanupBackendWs, cleanupAudio]);
 
-  /* ───── AudioWorklet setup (runs once; NOT tied to modelSpeaking) ───── */
+  /* ───── AudioWorklet setup ───── */
   useEffect(() => {
     if (
       !isStreaming ||
@@ -305,16 +273,12 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
           channelInterpretation: "speakers",
         });
 
-        const source = ctx.createMediaStreamSource(stream);
-        workletRef.current.port.onmessage = (ev) => {
+        const src = ctx.createMediaStreamSource(stream);
+        workletRef.current.port.onmessage = ({ data: { pcmData, level } }) => {
           if (!active) return;
-
-          const { pcmData, level } = ev.data;
           setAudioLevel(level);
 
-          /* ─── voice-activity detection ─── */
           const now = performance.now();
-
           if (level >= START_LEVEL && !modelSpeakingRef.current) {
             if (!speakingRef.current) {
               speakingRef.current = true;
@@ -323,63 +287,55 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
             lastVoiceMsRef.current = now;
           }
 
-          /* buffer only while speaking (and when model isn't talking) */
-          if (speakingRef.current && !modelSpeakingRef.current) {
-            const pcmArr = new Uint8Array(pcmData);
-            userChunksRef.current.push(pcmArr);
-          }
+          if (speakingRef.current && !modelSpeakingRef.current)
+            userChunksRef.current.push(new Uint8Array(pcmData));
 
-          /* always stream raw audio to Gemini */
           sendToGemini(Base64.fromUint8Array(new Uint8Array(pcmData)));
 
-          /* detect end-of-utterance */
           if (
             speakingRef.current &&
             !modelSpeakingRef.current &&
             level <= SILENCE_LEVEL &&
             now - lastVoiceMsRef.current > SILENCE_MS
-          ) {
+          )
             flushUserAudio();
-          }
         };
 
-        source.connect(workletRef.current);
+        src.connect(workletRef.current);
         setIsAudioSetup(true);
       } catch (err) {
         console.error("Audio worklet error:", err);
-        cleanupAudio();
+        workletRef.current?.disconnect();
+        workletRef.current = null;
         setIsAudioSetup(false);
       }
     })();
 
     return () => {
       active = false;
-      cleanupAudio();
+      workletRef.current?.disconnect();
+      workletRef.current = null;
       setIsAudioSetup(false);
     };
-  }, [isStreaming, stream, isWebSocketReady, flushUserAudio, cleanupAudio]);
+  }, [isStreaming, stream, isWebSocketReady, flushUserAudio]);
 
-  /* ───── Radial Card UI ───── */
+  /* ───── UI ───── */
   return (
     <div
-      className="text-center justify-items-center p-4 rounded-2xl cursor-pointer"
+      className="text-center p-4 rounded-2xl cursor-pointer"
       onClick={toggleMicrophone}
     >
       <div
         className="flex items-center justify-center h-full relative"
-        style={{ width: "300px", height: "300px" }}
+        style={{ width: 300, height: 300 }}
       >
         {isStreaming ? (
-          <MicOff
-            size={24}
-            className="text-red-700"
-            style={{ cursor: "pointer", zIndex: 10 }}
-          />
+          <MicOff size={24} className="text-red-700" style={{ zIndex: 10 }} />
         ) : (
           <Mic
             size={28}
             className="text-indigo-500 animate-pulse"
-            style={{ cursor: "pointer", zIndex: 10 }}
+            style={{ zIndex: 10 }}
           />
         )}
         <svg
@@ -388,22 +344,21 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
           viewBox="0 0 300 300"
           style={{ position: "absolute", top: 0, left: 0 }}
         >
-          {bars.map((height, index) => {
-            const angle = (index / bars.length) * 360;
-            const radians = (angle * Math.PI) / 180;
-            const x1 = 150 + Math.cos(radians) * 50;
-            const y1 = 150 + Math.sin(radians) * 50;
-            const x2 = 150 + Math.cos(radians) * (100 + height);
-            const y2 = 150 + Math.sin(radians) * (100 + height);
-
+          {bars.map((h, i) => {
+            const angle = (i / bars.length) * 360;
+            const rad = (angle * Math.PI) / 180;
+            const x1 = 150 + Math.cos(rad) * 50;
+            const y1 = 150 + Math.sin(rad) * 50;
+            const x2 = 150 + Math.cos(rad) * (100 + h);
+            const y2 = 150 + Math.sin(rad) * (100 + h);
             return (
               <motion.line
-                key={index}
+                key={i}
                 x1={x1}
                 y1={y1}
                 x2={x2}
                 y2={y2}
-                className="stroke-current text-indigo-500 dark:text-white dark:opacity-70 opacity-70"
+                className="stroke-current text-indigo-500 dark:text-white opacity-70"
                 strokeWidth="2"
                 initial={{ x2: x1, y2: y1 }}
                 animate={{ x2, y2 }}
@@ -412,21 +367,17 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
             );
           })}
         </svg>
-        <span className="absolute top-48 w-[calc(100%-70%)] h-[calc(100%-70%)] bg-primary blur-[120px]"></span>
-
-        {/* Status indicator */}
-        <div className="absolute -bottom-4 text-center">
-          <span className="text-sm font-medium">
-            {!isStreaming
-              ? "tap to activate"
-              : connectionStatus !== "connected"
-              ? "connecting..."
-              : isModelSpeaking
-              ? "delphi is speaking"
-              : speakingRef.current
+        <span className="absolute top-48 w-1/3 h-1/3 bg-primary blur-[120px]" />
+        <div className="absolute -bottom-4 text-center text-sm font-medium">
+          {connectionStatus !== "connected"
+            ? "connecting..."
+            : isModelSpeaking
+            ? "delphi is speaking"
+            : isStreaming
+            ? speakingRef.current
               ? "listening..."
-              : "ready"}
-          </span>
+              : "ready for input"
+            : "mic off - tap to enable"}
         </div>
       </div>
     </div>

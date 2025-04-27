@@ -1,5 +1,6 @@
 "use client";
 
+import { motion } from "framer-motion";
 import { Base64 } from "js-base64";
 import { Mic, MicOff } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -45,6 +46,7 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
     "disconnected" | "connecting" | "connected"
   >("disconnected");
   const [backendConnected, setBackendConnected] = useState(false);
+  const [bars, setBars] = useState(Array(50).fill(0));
 
   /* ───── cleanup helpers ───── */
   const cleanupAudio = useCallback(() => {
@@ -133,6 +135,7 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
       setStream(null);
       speakingRef.current = false;
       userChunksRef.current = [];
+      resetBars();
       return;
     }
 
@@ -154,6 +157,33 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
       cleanupAudio();
     }
   };
+
+  // Update bars based on audio level
+  const updateBars = useCallback((volume: number) => {
+    setBars(bars.map(() => Math.random() * volume * 0.5));
+  }, []);
+
+  // Reset bars when audio is not streaming
+  const resetBars = useCallback(() => {
+    setBars(Array(50).fill(0));
+  }, []);
+
+  // Update visualizer bars based on audio levels
+  useEffect(() => {
+    if (isStreaming) {
+      const activeLevel = isModelSpeaking ? outputAudioLevel : audioLevel;
+      updateBars(activeLevel);
+    } else {
+      resetBars();
+    }
+  }, [
+    audioLevel,
+    outputAudioLevel,
+    isModelSpeaking,
+    isStreaming,
+    updateBars,
+    resetBars,
+  ]);
 
   /* ───── WebSocket setup (runs once per start/stop) ───── */
   useEffect(() => {
@@ -245,76 +275,7 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
     return () => {
       cleanupBackendWs();
     };
-  }, [isStreaming, onTranscription]);
-
-  // useEffect(() => {
-  //   if (!isStreaming) {
-  //     cleanupBackendWs();
-  //     return;
-  //   }
-
-  //   if (!ttsServiceRef.current) {
-  //     ttsServiceRef.current = new TtsService((isPlaying) => {
-  //       if (!isPlaying && geminiWsRef.current && !modelSpeakingRef.current) {
-  //         geminiWsRef.current.resumeAudio();
-  //       }
-  //     });
-  //   }
-
-  //   const backendUrl = "ws://localhost:8004/ws/1";
-  //   const ws = new WebSocket(backendUrl);
-
-  //   ws.onopen = () => {
-  //     console.log("[Backend WebSocket] Connected");
-  //     setBackendConnected(true);
-  //   };
-
-  //   ws.onmessage = async (event) => {
-  //     try {
-  //       const data = JSON.parse(event.data);
-
-  //       if (data.message) {
-  //         console.log("[Backend WebSocket] Received message:", data.message);
-
-  //         // First, pause any ongoing Gemini audio to avoid overlap
-  //         if (geminiWsRef.current) {
-  //           geminiWsRef.current.pauseAudio();
-  //         }
-
-  //         // Feed the message as text input to Gemini
-  //         if (geminiWsRef.current) {
-  //           // Optional: add a small delay to ensure any current audio has stopped
-  //           await new Promise((resolve) => setTimeout(resolve, 100));
-
-  //           // Send the backend message as text input to Gemini
-  //           geminiWsRef.current.sendTextInput(
-  //             `[ANNOUNCEMENT]: ${data.message}`
-  //           );
-
-  //           // Resume Gemini's audio processing
-  //           geminiWsRef.current.resumeAudio();
-  //         }
-  //       }
-  //     } catch (error) {
-  //       console.error("[Backend WebSocket] Error processing message:", error);
-  //     }
-  //   };
-
-  //   ws.onerror = (error) => {
-  //     console.error("[Backend WebSocket] Error:", error);
-  //   };
-
-  //   ws.onclose = () => {
-  //     console.log("[Backend WebSocket] Disconnected");
-  //     setBackendConnected(false);
-  //   };
-
-  //   backendWsRef.current = ws;
-
-  //   return () => {
-  //     cleanupBackendWs();
-  //   };
-  // }, [isStreaming, onTranscription]);
+  }, [isStreaming, onTranscription, cleanupBackendWs]);
 
   /* ───── AudioWorklet setup (runs once; NOT tied to modelSpeaking) ───── */
   useEffect(() => {
@@ -396,110 +357,77 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
       cleanupAudio();
       setIsAudioSetup(false);
     };
-  }, [isStreaming, stream, isWebSocketReady, flushUserAudio]);
+  }, [isStreaming, stream, isWebSocketReady, flushUserAudio, cleanupAudio]);
 
-  // Calculate the number of wave circles to display based on audio level
-  const getWaveCircles = () => {
-    const activeLevel = isModelSpeaking ? outputAudioLevel : audioLevel;
-    // Define how many circles to show at minimum and maximum
-    const minCircles = 1;
-    const maxCircles = 4;
-
-    // Scale the number of circles based on the audio level
-    const scaledCircles = Math.max(
-      minCircles,
-      Math.round((activeLevel / 100) * maxCircles)
-    );
-
-    return Array.from({ length: maxCircles }, (_, i) => {
-      const isActive = i < scaledCircles;
-      return (
-        <div
-          key={`wave-${i}`}
-          className={`absolute rounded-full border transition-all duration-300 ${
-            isActive
-              ? isModelSpeaking
-                ? "border-blue-400 opacity-70 animate-pulse"
-                : "border-purple-400 opacity-70"
-              : "border-gray-300 opacity-10"
-          }`}
-          style={{
-            width: `${140 + i * 40}px`,
-            height: `${140 + i * 40}px`,
-            animationDelay: `${i * 0.2}s`,
-            transform: `scale(${isActive ? 1 : 0.8})`,
-          }}
-        />
-      );
-    });
-  };
-
-  /* ───── Updated UI for Siri-like interface ───── */
+  /* ───── Radial Card UI ───── */
   return (
-    <div className="flex flex-col items-center justify-center gap-3">
-      <div className="relative flex items-center justify-center h-64 w-64">
-        {/* Pulsing wave circles */}
-        {isStreaming && getWaveCircles()}
-
-        {/* Center microphone button */}
-        <button
-          onClick={toggleMicrophone}
-          className={`relative z-10 flex items-center justify-center w-32 h-32 rounded-full transition-all duration-300 shadow-lg ${
-            isStreaming
-              ? isModelSpeaking
-                ? "bg-blue-500"
-                : speakingRef.current
-                ? "bg-purple-500"
-                : "bg-purple-400"
-              : "bg-gray-200 hover:bg-gray-300"
-          }`}
-        >
-          {isStreaming ? (
-            <MicOff className="h-10 w-10 text-white" />
-          ) : (
-            <Mic className="h-10 w-10 text-gray-700" />
-          )}
-        </button>
-
-        {/* Status text below */}
-        <div className="absolute -bottom-12 text-center">
-          {isStreaming ? (
-            connectionStatus === "connected" ? (
-              <span className="text-sm font-medium text-gray-700">
-                {isModelSpeaking
-                  ? "AI is speaking..."
-                  : speakingRef.current
-                  ? "Listening..."
-                  : "Ready to listen"}
-              </span>
-            ) : (
-              <span className="text-sm font-medium text-amber-600">
-                Connecting...
-              </span>
-            )
-          ) : (
-            <span className="text-sm font-medium text-gray-500">
-              Tap to activate
-            </span>
-          )}
-        </div>
-
-        {/* Loading overlay when connecting */}
-        {isStreaming && connectionStatus !== "connected" && (
-          <div className="absolute inset-0 bg-black/30 flex items-center justify-center rounded-full backdrop-blur-sm z-20">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
-          </div>
+    <div className="border text-center justify-items-center p-4 rounded-2xl">
+      <div
+        className="flex items-center justify-center h-full relative"
+        style={{ width: "300px", height: "300px" }}
+      >
+        {isStreaming ? (
+          <MicOff
+            size={24}
+            className="text-black dark:text-white"
+            onClick={toggleMicrophone}
+            style={{ cursor: "pointer", zIndex: 10 }}
+          />
+        ) : (
+          <Mic
+            size={28}
+            className="text-black dark:text-white"
+            onClick={toggleMicrophone}
+            style={{ cursor: "pointer", zIndex: 10 }}
+          />
         )}
-      </div>
+        <svg
+          width="100%"
+          height="100%"
+          viewBox="0 0 300 300"
+          style={{ position: "absolute", top: 0, left: 0 }}
+        >
+          {bars.map((height, index) => {
+            const angle = (index / bars.length) * 360;
+            const radians = (angle * Math.PI) / 180;
+            const x1 = 150 + Math.cos(radians) * 50;
+            const y1 = 150 + Math.sin(radians) * 50;
+            const x2 = 150 + Math.cos(radians) * (100 + height);
+            const y2 = 150 + Math.sin(radians) * (100 + height);
 
-      {/* Additional debug information - can be removed in production */}
-      {isStreaming && (
-        <div className="mt-8 text-xs text-gray-500">
-          {isModelSpeaking
-            ? `AI Response Level: ${Math.round(outputAudioLevel)}%`
-            : `Mic Level: ${Math.round(audioLevel)}%`}
+            return (
+              <motion.line
+                key={index}
+                x1={x1}
+                y1={y1}
+                x2={x2}
+                y2={y2}
+                className="stroke-current text-black dark:text-white dark:opacity-70 opacity-70"
+                strokeWidth="2"
+                initial={{ x2: x1, y2: y1 }}
+                animate={{ x2, y2 }}
+                transition={{ type: "spring", stiffness: 300, damping: 20 }}
+              />
+            );
+          })}
+        </svg>
+        <span className="absolute top-48 w-[calc(100%-70%)] h-[calc(100%-70%)] bg-primary blur-[120px]"></span>
+
+        {/* Status indicator */}
+        <div className="absolute -bottom-8 text-center">
+          <span className="text-sm font-medium">
+            {!isStreaming
+              ? "Tap to activate"
+              : connectionStatus !== "connected"
+              ? "Connecting..."
+              : isModelSpeaking
+              ? "Gemini is speaking"
+              : speakingRef.current
+              ? "Listening..."
+              : "Ready"}
+          </span>
         </div>
-      )}
+      </div>
     </div>
   );
 }

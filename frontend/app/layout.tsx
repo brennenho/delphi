@@ -7,7 +7,10 @@ const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Delphi",
-  description: "Agentic browser for the visually impaired",
+  description: "Agentic browsing for the visually impaired",
+  icons: {
+    icon: "/favicon.ico",
+  },
 };
 
 export default function RootLayout({

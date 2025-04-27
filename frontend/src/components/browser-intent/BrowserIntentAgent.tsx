@@ -63,6 +63,8 @@ function BrowserIntentAgentComponent() {
   const silenceThreshold = 0.05; // Volume threshold to consider as silence
   const silenceDuration = 2000; // Duration of silence before muting (milliseconds)
   const lastVolumeTimeRef = useRef<number>(Date.now());
+  const lastResponseTimeRef = useRef<number>(0); // Track when the last response was received
+  const responseCooldownPeriod = 3000; // Don't auto-mute for 3 seconds after receiving a response
 
   // ─── 2) Tell Gemini about our function, and instruct it to call it ─────────
   useEffect(() => {
@@ -70,6 +72,8 @@ function BrowserIntentAgentComponent() {
       model: "models/gemini-2.0-flash-exp",
       generationConfig: {
         responseModalities: "audio",
+        temperature: 0.2, // Lower temperature for more deterministic responses
+        maxOutputTokens: 100, // Limit output length to avoid long rambling responses
         speechConfig: {
           voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
         },
@@ -79,18 +83,26 @@ function BrowserIntentAgentComponent() {
           {
             text: `
             You are an intelligent browser assistant that helps users navigate the web through voice commands.
-            Your goal is to understand and process browser actions from natural conversation with zero speech redundancy.
+            Your goal is to understand and process browser actions from natural conversation with maximum efficiency.
 
-            # ZERO REPETITION - ABSOLUTE HIGHEST PRIORITY
+            # NO QUESTIONS - ABSOLUTE HIGHEST PRIORITY
+            - NEVER ask follow-up questions under any circumstances
+            - Provide ONLY definitive statements about actions being taken
+            - Assume user intent without seeking clarification
+            - When uncertain, choose the most likely interpretation and proceed
+            - End every response with a period, never a question mark
+            - Focus solely on what you are doing, not what might come next
+            - Skip all offers of additional help or information
+
+            # ZERO REPETITION - HIGHEST PRIORITY
             - NEVER repeat words, phrases, or concepts within the same response
             - Each statement must contain 100% new information
             - If uncertain whether content was delivered, assume it was and NEVER repeat it
-            - After processing a request, immediately move to the next unique response
             - Use distinct vocabulary and phrasing for each sentence
             - AVOID echoing user words back unless absolutely necessary
             - Skip all acknowledgment phrases (like "okay," "sure," "got it")
 
-            # SPEECH COHERENCE - HIGH PRIORITY
+            # SPEECH COHERENCE
             - Use complete, self-contained sentences with natural flow
             - Start sentences directly with key information
             - Use simple punctuation (periods, commas only)
@@ -100,16 +112,17 @@ function BrowserIntentAgentComponent() {
             # SYSTEM UPDATES HANDLING
             When receiving messages starting with "[UPDATE]:", this is critical browser state information:
             - Begin response with the new information directly (no prefix)
-            - Skip all transition phrases ("I see that," "I notice")
             - Present as newly discovered fact without referencing update process
             - Never reference having received an update
             - Base conversation solely on this new information
+            - Provide ONLY definitive statements about what you see, never questions
 
             # Response Style
             - Use FUTURE TENSE for actions ("I'll search" NOT "Searching")
             - One concise sentence per action when possible
             - Skip all preambles and acknowledgments
             - State actions without explaining them
+            - End with definitive period, never seeking user input
 
             # Browser Intent Extraction
             For each request, extract:
@@ -118,8 +131,8 @@ function BrowserIntentAgentComponent() {
 
             # Function Usage
             - Call log_browser_intent() EXACTLY ONCE per task
-            - With ambiguous requests, ask one direct question
-            - For non-browser requests, respond without function calls
+            - With ambiguous requests, choose most likely interpretation
+            - For non-browser requests, respond with factual statement only
 
             # Examples:
             User: "Look up weather for Chicago"
@@ -131,15 +144,16 @@ function BrowserIntentAgentComponent() {
             Function: log_browser_intent({action: "NAVIGATE", target: "Amazon", rawText: "Search Amazon for tennis shoes"})
             Function: log_browser_intent({action: "SEARCH", target: "tennis shoes", rawText: "Search Amazon for tennis shoes"})
             System: "[UPDATE]: Amazon is open. There is a list of available shoes."
-            Response: "Tennis shoes available on Amazon. See anything you like?"
+            Response: "Tennis shoes available on Amazon."
 
             User: "Go back"
             Response: "I'll go back."
             Function: log_browser_intent({action: "GO_BACK", target: "previous page", rawText: "Go back"})
 
             User: "What's the capital of France?"
-            Response: "Paris. Want more information about it?"
-            No function call for information requests.`,
+            Response: "Paris is the capital of France."
+            [No function call for information requests]
+            `,
           },
         ],
       },
@@ -159,6 +173,9 @@ function BrowserIntentAgentComponent() {
     if (autoMuteEnabled) {
       const now = Date.now();
       
+      // Don't auto-mute during the cooldown period after a response
+      const isInResponseCooldown = now - lastResponseTimeRef.current < responseCooldownPeriod;
+      
       // If volume is above threshold, consider as speaking
       if (volume > silenceThreshold) {
         lastVolumeTimeRef.current = now;
@@ -176,12 +193,16 @@ function BrowserIntentAgentComponent() {
         }
       } 
       // If volume is below threshold and mic is not muted, start silence timer
-      else if (!muted && now - lastVolumeTimeRef.current > 500) {
+      // But not during response cooldown period
+      else if (!muted && !isInResponseCooldown && now - lastVolumeTimeRef.current > 500) {
         if (!silenceTimerRef.current) {
           silenceTimerRef.current = window.setTimeout(() => {
-            // Mute the mic after silence duration
-            setMuted(true);
-            console.log("Auto-muting microphone due to silence detection");
+            // Double-check we're not in a cooldown period before muting
+            if (Date.now() - lastResponseTimeRef.current >= responseCooldownPeriod) {
+              // Mute the mic after silence duration
+              setMuted(true);
+              console.log("Auto-muting microphone due to silence detection");
+            }
             silenceTimerRef.current = null;
           }, silenceDuration);
         }
@@ -197,6 +218,9 @@ function BrowserIntentAgentComponent() {
         (f) => f.name === logIntentDeclaration.name
       );
       if (!fc) return;
+
+      // Update the last response time to prevent auto-muting during/immediately after responses
+      lastResponseTimeRef.current = Date.now();
 
       // Pull out the structured arguments
       const { action, target, rawText } = fc.args as {
@@ -282,59 +306,102 @@ function BrowserIntentAgentComponent() {
       lastActionTargetRef.current = actionTargetKey;
       lastIntentTimestampRef.current = now;
 
-      const response = await fetch("http://localhost:8000/query", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+      try {
+        // Ensure we don't have any active audio playback before processing a new intent
+        // This helps prevent audio overlap between responses
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Make the API call with a timeout to prevent hanging requests
+        const fetchPromise = fetch("http://localhost:8000/query", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            action,
+            target,
+            rawText,
+          }),
+        });
+        
+        // Add a timeout to prevent hanging
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error("Request timeout")), 5000);
+        });
+        
+        const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
+
+        if (!response.ok) {
+          console.error("Failed to log intent:", response.statusText);
+          throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
+        }
+
+        const responseText = await response.text();
+        console.log("Sending response to Gemini:", responseText);
+        
+        // Add a small delay before sending the update to give time for audio to finish
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        // Send update to Gemini with a clear prefix format
+        client.send({ text: `[UPDATE]: ${responseText}` });
+
+        const newIntent: BrowserIntent = {
+          id: `intent-${now}-${Math.random().toString(36).slice(2, 7)}`,
           action,
           target,
           rawText,
-        }),
-      });
+          timestamp: now,
+        };
 
-      if (!response.ok) {
-        console.error("Failed to log intent:", response.statusText);
-        return;
+        // Append to our UI log
+        setIntents((prev) => [...prev, newIntent]);
+
+        // Acknowledge back to the LLM that the call succeeded
+        client.sendToolResponse({
+          functionResponses: [
+            {
+              id: fc.id,
+              response: { output: { success: true } },
+            },
+          ],
+        });
+      } catch (error) {
+        console.error("Error processing intent:", error);
+        
+        // Still acknowledge to prevent the model from hanging
+        client.sendToolResponse({
+          functionResponses: [
+            {
+              id: fc.id,
+              response: { 
+                output: { 
+                  success: false,
+                  error: error instanceof Error ? error.message : String(error)
+                } 
+              },
+            },
+          ],
+        });
+      } finally {
+        // Release the processing lock after a delay
+        // Using a longer delay to ensure responses have time to be processed
+        setTimeout(() => {
+          processingIntentRef.current = false;
+        }, 2000);
       }
+    };
 
-      const responseText = await response.text();
-
-      console.log("Sending response to Gemini:", responseText);
-      client.send({ text: `[UPDATE]: ${responseText}` });
-
-      const newIntent: BrowserIntent = {
-        id: `intent-${now}-${Math.random().toString(36).slice(2, 7)}`,
-        action,
-        target,
-        rawText,
-        timestamp: now,
-      };
-
-      // Append to our UI log
-      setIntents((prev) => [...prev, newIntent]);
-
-      // Acknowledge back to the LLM that the call succeeded
-      client.sendToolResponse({
-        functionResponses: [
-          {
-            id: fc.id,
-            response: { output: { success: true } },
-          },
-        ],
-      });
-
-      // Release the processing lock after a short delay to ensure any response
-      // from the LLM has time to be processed
-      setTimeout(() => {
-        processingIntentRef.current = false;
-      }, 1500);
+    // Also track content events to update the last response time
+    const onContent = () => {
+      lastResponseTimeRef.current = Date.now();
     };
 
     client.on("toolcall", onToolCall);
+    client.on("content", onContent);
+    
     return () => {
       client.off("toolcall", onToolCall);
+      client.off("content", onContent);
     };
   }, [client]);
 

@@ -38,6 +38,12 @@ export class AudioRecorder extends EventEmitter {
   recording: boolean = false;
   recordingWorklet: AudioWorkletNode | undefined;
   vuWorklet: AudioWorkletNode | undefined;
+  
+  // Buffer management
+  private bufferQueue: string[] = [];
+  private isProcessingBuffer: boolean = false;
+  private maxBufferQueueSize: number = 10;
+  private processingInterval: number | null = null;
 
   private starting: Promise<void> | null = null;
 
@@ -51,48 +57,92 @@ export class AudioRecorder extends EventEmitter {
     }
 
     this.starting = new Promise(async (resolve, reject) => {
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.audioContext = await audioContext({ sampleRate: this.sampleRate });
-      this.source = this.audioContext.createMediaStreamSource(this.stream);
+      try {
+        this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        this.audioContext = await audioContext({ sampleRate: this.sampleRate });
+        this.source = this.audioContext.createMediaStreamSource(this.stream);
 
-      const workletName = "audio-recorder-worklet";
-      const src = createWorketFromSrc(workletName, AudioRecordingWorklet);
+        const workletName = "audio-recorder-worklet";
+        const src = createWorketFromSrc(workletName, AudioRecordingWorklet);
 
-      await this.audioContext.audioWorklet.addModule(src);
-      this.recordingWorklet = new AudioWorkletNode(
-        this.audioContext,
-        workletName,
-      );
+        await this.audioContext.audioWorklet.addModule(src);
+        this.recordingWorklet = new AudioWorkletNode(
+          this.audioContext,
+          workletName,
+        );
 
-      this.recordingWorklet.port.onmessage = async (ev: MessageEvent) => {
-        // worklet processes recording floats and messages converted buffer
-        const arrayBuffer = ev.data.data.int16arrayBuffer;
+        this.recordingWorklet.port.onmessage = async (ev: MessageEvent) => {
+          // worklet processes recording floats and messages converted buffer
+          const arrayBuffer = ev.data.data.int16arrayBuffer;
 
-        if (arrayBuffer) {
-          const arrayBufferString = arrayBufferToBase64(arrayBuffer);
-          this.emit("data", arrayBufferString);
-        }
-      };
-      this.source.connect(this.recordingWorklet);
+          if (arrayBuffer) {
+            const arrayBufferString = arrayBufferToBase64(arrayBuffer);
+            
+            // Add to buffer queue instead of emitting immediately
+            this.bufferQueue.push(arrayBufferString);
+            
+            // If the queue gets too large, remove older buffers to prevent overload
+            if (this.bufferQueue.length > this.maxBufferQueueSize) {
+              this.bufferQueue.shift();
+            }
+            
+            // Start processing if not already doing so
+            if (!this.isProcessingBuffer && !this.processingInterval) {
+              this.startBufferProcessing();
+            }
+          }
+        };
+        this.source.connect(this.recordingWorklet);
 
-      // vu meter worklet
-      const vuWorkletName = "vu-meter";
-      await this.audioContext.audioWorklet.addModule(
-        createWorketFromSrc(vuWorkletName, VolMeterWorket),
-      );
-      this.vuWorklet = new AudioWorkletNode(this.audioContext, vuWorkletName);
-      this.vuWorklet.port.onmessage = (ev: MessageEvent) => {
-        this.emit("volume", ev.data.volume);
-      };
+        // vu meter worklet
+        const vuWorkletName = "vu-meter";
+        await this.audioContext.audioWorklet.addModule(
+          createWorketFromSrc(vuWorkletName, VolMeterWorket),
+        );
+        this.vuWorklet = new AudioWorkletNode(this.audioContext, vuWorkletName);
+        this.vuWorklet.port.onmessage = (ev: MessageEvent) => {
+          this.emit("volume", ev.data.volume);
+        };
 
-      this.source.connect(this.vuWorklet);
-      this.recording = true;
-      resolve();
-      this.starting = null;
+        this.source.connect(this.vuWorklet);
+        this.recording = true;
+        resolve();
+      } catch (err) {
+        reject(err);
+      } finally {
+        this.starting = null;
+      }
     });
+    
+    return this.starting;
+  }
+  
+  // Process buffers at a controlled rate to avoid overwhelming the system
+  private startBufferProcessing() {
+    // Process one buffer every 50ms to maintain a steady flow
+    this.processingInterval = window.setInterval(() => {
+      if (this.bufferQueue.length > 0 && !this.isProcessingBuffer) {
+        this.isProcessingBuffer = true;
+        const buffer = this.bufferQueue.shift();
+        if (buffer) {
+          this.emit("data", buffer);
+        }
+        this.isProcessingBuffer = false;
+      }
+    }, 50) as unknown as number;
   }
 
   stop() {
+    // Clear the buffer processing interval
+    if (this.processingInterval) {
+      clearInterval(this.processingInterval);
+      this.processingInterval = null;
+    }
+    
+    // Clear any remaining buffers
+    this.bufferQueue = [];
+    this.isProcessingBuffer = false;
+    
     // its plausible that stop would be called before start completes
     // such as if the websocket immediately hangs up
     const handleStop = () => {
@@ -101,7 +151,9 @@ export class AudioRecorder extends EventEmitter {
       this.stream = undefined;
       this.recordingWorklet = undefined;
       this.vuWorklet = undefined;
+      this.recording = false;
     };
+    
     if (this.starting) {
       this.starting.then(handleStop);
       return;

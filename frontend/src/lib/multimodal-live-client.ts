@@ -169,71 +169,183 @@ export class MultimodalLiveClient extends EventEmitter<MultimodalLiveClientEvent
     const response: LiveIncomingMessage = (await blobToJSON(
       blob
     )) as LiveIncomingMessage;
+
     if (isToolCallMessage(response)) {
-      this.log("server.toolCall", response);
       this.emit("toolcall", response.toolCall);
       return;
     }
     if (isToolCallCancellationMessage(response)) {
-      this.log("receive.toolCallCancellation", response);
       this.emit("toolcallcancellation", response.toolCallCancellation);
       return;
     }
-
     if (isSetupCompleteMessage(response)) {
-      this.log("server.send", "setupComplete");
       this.emit("setupcomplete");
       return;
     }
 
-    // this json also might be `contentUpdate { interrupted: true }`
-    // or contentUpdate { end_of_turn: true }
     if (isServerContentMessage(response)) {
       const { serverContent } = response;
       if (isInterrupted(serverContent)) {
         this.log("receive.serverContent", "interrupted");
+        
+        // First emit the interrupted event to clear any pending audio
         this.emit("interrupted");
+        
+        // Wait for clean-up before signaling turn completion
+        setTimeout(() => {
+          this.emit("turncomplete");
+        }, 700);  // Increased from 500ms to 700ms for more clean-up time
         return;
       }
+      
       if (isTurnComplete(serverContent)) {
         this.log("server.send", "turnComplete");
-        this.emit("turncomplete");
-        //plausible theres more to the message, continue
+        
+        // Allow a small delay before emitting the turn complete event
+        // to ensure all audio processing is finished
+        setTimeout(() => {
+          this.emit("turncomplete");
+        }, 150);
+        
+        // Don't return here as there might be more content in this message
       }
 
       if (isModelTurn(serverContent)) {
         let parts: Part[] = serverContent.modelTurn.parts;
 
-        // when its audio that is returned for modelTurn
+        // When it's audio that is returned for modelTurn
         const audioParts = parts.filter(
           (p) => p.inlineData && p.inlineData.mimeType.startsWith("audio/pcm")
         );
+        
+        // Get all audio base64 data
         const base64s = audioParts.map((p) => p.inlineData?.data);
 
-        // strip the audio parts out of the modelTurn
+        // Strip the audio parts out of the modelTurn
         const otherParts = difference(parts, audioParts);
-        // console.log("otherParts", otherParts);
-
-        base64s.forEach((b64) => {
-          if (b64) {
-            const data = base64ToArrayBuffer(b64);
-            this.emit("audio", data);
-            this.log(`server.audio`, `buffer (${data.byteLength})`);
+        
+        // Group audio parts to avoid tiny chunks
+        // Process the audio chunks in larger batches for smoother playback
+        if (base64s.length > 0) {
+          // Use a batch size that's appropriate for the audio
+          const BATCH_SIZE = 3; // Process 3 chunks at a time
+          
+          for (let i = 0; i < base64s.length; i += BATCH_SIZE) {
+            // Combine the chunks in this batch
+            const batchChunks = base64s.slice(i, i + BATCH_SIZE).filter(Boolean);
+            
+            // Convert and emit each chunk in the batch
+            for (const b64 of batchChunks) {
+              if (b64) {
+                const data = base64ToArrayBuffer(b64);
+                this.emit("audio", data);
+                this.log(`server.audio`, `buffer (${data.byteLength})`);
+              }
+            }
+            
+            // Small delay between batches to help with processing
+            // This helps prevent buffer overflow while still maintaining 
+            // a smooth audio experience
+            if (i + BATCH_SIZE < base64s.length) {
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
           }
-        });
+        }
+        
         if (!otherParts.length) {
           return;
         }
 
+        // Process the non-audio parts
         parts = otherParts;
-
-        const content: ModelTurn = { modelTurn: { parts } };
-        this.emit("content", content);
+        
+        // Text processing - special handling for repeated content
+        // This helps avoid the model repeating itself in speech
+        if (parts.length > 0 && parts[0].text) {
+          const content: ModelTurn = { 
+            modelTurn: { 
+              parts: otherParts.map(part => {
+                // If this is text, check for repetitive phrases and remove them
+                if (part.text) {
+                  const text = this.removeRepeatedPhrases(part.text);
+                  return { ...part, text };
+                }
+                return part;
+              }) 
+            } 
+          };
+          this.emit("content", content);
+        } else {
+          const content: ModelTurn = { modelTurn: { parts } };
+          this.emit("content", content);
+        }
+        
         this.log(`server.content`, response);
       }
     } else {
       console.log("received unmatched message", response);
     }
+  }
+  
+  // Helper method to detect and remove repetitive text patterns
+  // This helps prevent the model from repeating itself in speech
+  private removeRepeatedPhrases(text: string): string {
+    // If text is very short, no need to process
+    if (text.length < 10) return text;
+    
+    // Split into sentences
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
+    
+    // If only one sentence, return as is
+    if (sentences.length <= 1) return text;
+    
+    // Build a set of unique sentences to avoid repetition
+    const uniqueSentences: string[] = [];
+    const seenContent = new Set<string>();
+    
+    for (const sentence of sentences) {
+      const trimmed = sentence.trim();
+      
+      // Skip very short sentences
+      if (trimmed.length < 3) continue;
+      
+      // Normalize the sentence for comparison
+      const normalized = trimmed.toLowerCase().replace(/\s+/g, ' ');
+      
+      // Check if we've seen similar content
+      let isDuplicate = false;
+      
+      for (const seen of seenContent) {
+        // Check for substantial overlap or if one contains the other
+        if (normalized.includes(seen) || seen.includes(normalized) ||
+            this.calculateSimilarity(normalized, seen) > 0.7) {
+          isDuplicate = true;
+          break;
+        }
+      }
+      
+      if (!isDuplicate) {
+        uniqueSentences.push(trimmed);
+        seenContent.add(normalized);
+      }
+    }
+    
+    // Return the filtered text
+    return uniqueSentences.join('. ') + (text.endsWith('.') ? '.' : '');
+  }
+  
+  // Calculate similarity between two strings (Jaccard similarity)
+  private calculateSimilarity(str1: string, str2: string): number {
+    const set1 = new Set(str1.split(' '));
+    const set2 = new Set(str2.split(' '));
+    
+    // Calculate intersection size
+    const intersection = new Set([...set1].filter(x => set2.has(x)));
+    
+    // Calculate union size
+    const union = new Set([...set1, ...set2]);
+    
+    return intersection.size / union.size;
   }
 
   /**

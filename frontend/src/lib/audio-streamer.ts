@@ -30,8 +30,9 @@ export class AudioStreamer {
   public source: AudioBufferSourceNode;
   private isStreamComplete: boolean = false;
   private checkInterval: number | null = null;
-  private initialBufferTime: number = 0.1; //0.1 // 100ms initial buffer
+  private initialBufferTime: number = 0.25; // Increased from 0.1 to 0.25 seconds
   private endOfQueueAudioSource: AudioBufferSourceNode | null = null;
+  private minBufferSize: number = 2; // Minimum number of buffers before starting playback
 
   public onComplete = () => {};
 
@@ -84,9 +85,6 @@ export class AudioStreamer {
         float32Array[i] = int16 / 32768;
       } catch (e) {
         console.error(e);
-        // console.log(
-        //   `dataView.length: ${dataView.byteLength},  i * 2: ${i * 2}`,
-        // );
       }
     }
 
@@ -103,10 +101,14 @@ export class AudioStreamer {
       this.processingBuffer = this.processingBuffer.slice(this.bufferSize);
     }
 
-    if (!this.isPlaying) {
+    // Only start playing when we have collected enough buffers or if we're already playing
+    if (!this.isPlaying && this.audioQueue.length >= this.minBufferSize) {
       this.isPlaying = true;
       // Initialize scheduledTime only when we start playing
       this.scheduledTime = this.context.currentTime + this.initialBufferTime;
+      this.scheduleNextBuffer();
+    } else if (this.isPlaying && !this.checkInterval) {
+      // If we're already playing but the check interval isn't running, start it again
       this.scheduleNextBuffer();
     }
   }
@@ -122,7 +124,7 @@ export class AudioStreamer {
   }
 
   private scheduleNextBuffer() {
-    const SCHEDULE_AHEAD_TIME = 0.2;
+    const SCHEDULE_AHEAD_TIME = 0.3; // Increased from 0.2 to 0.3 seconds
 
     while (
       this.audioQueue.length > 0 &&
@@ -143,7 +145,10 @@ export class AudioStreamer {
             this.endOfQueueAudioSource === source
           ) {
             this.endOfQueueAudioSource = null;
-            this.onComplete();
+            // Only call onComplete if the stream is marked as complete
+            if (this.isStreamComplete) {
+              this.onComplete();
+            }
           }
         };
       }
@@ -168,10 +173,6 @@ export class AudioStreamer {
         });
       }
 
-      // i added this trying to fix clicks
-      // this.gainNode.gain.setValueAtTime(0, 0);
-      // this.gainNode.gain.linearRampToValueAtTime(1, 1);
-
       // Ensure we never schedule in the past
       const startTime = Math.max(this.scheduledTime, this.context.currentTime);
       source.start(startTime);
@@ -179,14 +180,19 @@ export class AudioStreamer {
       this.scheduledTime = startTime + audioBuffer.duration;
     }
 
-    if (this.audioQueue.length === 0 && this.processingBuffer.length === 0) {
+    // More aggressive checking for new buffers when the queue is getting low
+    if (this.audioQueue.length < this.minBufferSize) {
       if (this.isStreamComplete) {
-        this.isPlaying = false;
-        if (this.checkInterval) {
-          clearInterval(this.checkInterval);
-          this.checkInterval = null;
+        // If the stream is complete and we have no more buffers, we're done
+        if (this.audioQueue.length === 0 && this.processingBuffer.length === 0) {
+          this.isPlaying = false;
+          if (this.checkInterval) {
+            clearInterval(this.checkInterval);
+            this.checkInterval = null;
+          }
         }
       } else {
+        // If the stream is not complete, set up a check interval to watch for new buffers
         if (!this.checkInterval) {
           this.checkInterval = window.setInterval(() => {
             if (
@@ -195,15 +201,16 @@ export class AudioStreamer {
             ) {
               this.scheduleNextBuffer();
             }
-          }, 100) as unknown as number;
+          }, 50) as unknown as number; // Check more frequently (50ms instead of 100ms)
         }
       }
     } else {
+      // We have enough buffers, schedule the next check based on audio duration
       const nextCheckTime =
         (this.scheduledTime - this.context.currentTime) * 1000;
       setTimeout(
         () => this.scheduleNextBuffer(),
-        Math.max(0, nextCheckTime - 50),
+        Math.max(20, nextCheckTime - 100), // Ensure we check at least every 20ms
       );
     }
   }

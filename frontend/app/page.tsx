@@ -1,9 +1,9 @@
 // app/page.tsx
 "use client";
-import { useState, useCallback } from 'react';
-import CameraPreview from './components/CameraPreview';
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { useCallback, useState } from "react";
+import AudioInput from "../components/audio-input";
 
 // Helper function to create message components
 const HumanMessage = ({ text }: { text: string }) => (
@@ -41,10 +41,12 @@ const GeminiMessage = ({ text }: { text: string }) => (
 );
 
 export default function Home() {
-  const [messages, setMessages] = useState<{ type: 'human' | 'gemini', text: string }[]>([]);
+  const [messages, setMessages] = useState<
+    { type: "human" | "gemini"; text: string }[]
+  >([]);
 
   const handleTranscription = useCallback((transcription: string) => {
-    setMessages(prev => [...prev, { type: 'gemini', text: transcription }]);
+    setMessages((prev) => [...prev, { type: "gemini", text: transcription }]);
   }, []);
 
   return (
@@ -53,19 +55,19 @@ export default function Home() {
         Multimodal Live Chat
       </h1>
       <div className="flex gap-8 p-8">
-        <CameraPreview onTranscription={handleTranscription} />
+        <AudioInput onTranscription={handleTranscription} />
 
         <div className="w-[640px] bg-white">
           <ScrollArea className="h-[540px] p-6">
             <div className="space-y-6">
               <GeminiMessage text="Hi! I'm Gemini. I can see and hear you. Let's chat!" />
-              {messages.map((message, index) => (
-                message.type === 'human' ? (
+              {messages.map((message, index) =>
+                message.type === "human" ? (
                   <HumanMessage key={`msg-${index}`} text={message.text} />
                 ) : (
                   <GeminiMessage key={`msg-${index}`} text={message.text} />
                 )
-              ))}
+              )}
             </div>
           </ScrollArea>
         </div>

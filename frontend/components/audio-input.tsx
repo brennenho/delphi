@@ -1,29 +1,25 @@
-// app/components/CameraPreview.tsx
 "use client";
 
 import { Base64 } from "js-base64";
-import { Video, VideoOff } from "lucide-react";
+import { Mic, MicOff } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button } from "../../components/ui/button";
-import { GeminiWebSocket } from "../services/geminiWebSocket";
+import { GeminiWebSocket } from "../app/services/geminiWebSocket";
+import { Button } from "./ui/button";
 
-interface CameraPreviewProps {
+interface AudioInputProps {
   onTranscription: (text: string) => void;
 }
 
-export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+export default function AudioInput({ onTranscription }: AudioInputProps) {
   const audioContextRef = useRef<AudioContext | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const geminiWsRef = useRef<GeminiWebSocket | null>(null);
-  const videoCanvasRef = useRef<HTMLCanvasElement>(null);
   const audioWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
   const [isAudioSetup, setIsAudioSetup] = useState(false);
   const setupInProgressRef = useRef(false);
   const [isWebSocketReady, setIsWebSocketReady] = useState(false);
-  const imageIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [isModelSpeaking, setIsModelSpeaking] = useState(false);
   const [outputAudioLevel, setOutputAudioLevel] = useState(0);
   const [connectionStatus, setConnectionStatus] = useState<
@@ -48,29 +44,21 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
     }
   }, []);
 
-  // Simplify sendAudioData to just send continuously
+  // Send audio data to Gemini
   const sendAudioData = (b64Data: string) => {
     if (!geminiWsRef.current) return;
     geminiWsRef.current.sendMediaChunk(b64Data, "audio/pcm");
   };
 
-  const toggleCamera = async () => {
+  const toggleMicrophone = async () => {
     if (isStreaming && stream) {
       setIsStreaming(false);
       cleanupWebSocket();
       cleanupAudio();
       stream.getTracks().forEach((track) => track.stop());
-      if (videoRef.current) {
-        videoRef.current.srcObject = null;
-      }
       setStream(null);
     } else {
       try {
-        const videoStream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false,
-        });
-
         const audioStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             sampleRate: 16000,
@@ -85,20 +73,10 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
           sampleRate: 16000,
         });
 
-        if (videoRef.current) {
-          videoRef.current.srcObject = videoStream;
-          videoRef.current.muted = true;
-        }
-
-        const combinedStream = new MediaStream([
-          ...videoStream.getTracks(),
-          ...audioStream.getTracks(),
-        ]);
-
-        setStream(combinedStream);
+        setStream(audioStream);
         setIsStreaming(true);
       } catch (err) {
-        console.error("Error accessing media devices:", err);
+        console.error("Error accessing audio devices:", err);
         cleanupAudio();
       }
     }
@@ -117,9 +95,7 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
         console.log("Received from Gemini:", text);
       },
       () => {
-        console.log(
-          "[Camera] WebSocket setup complete, starting media capture"
-        );
+        console.log("[Audio] WebSocket setup complete, starting audio capture");
         setIsWebSocketReady(true);
         setConnectionStatus("connected");
       },
@@ -134,30 +110,11 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
     geminiWsRef.current.connect();
 
     return () => {
-      if (imageIntervalRef.current) {
-        clearInterval(imageIntervalRef.current);
-        imageIntervalRef.current = null;
-      }
       cleanupWebSocket();
       setIsWebSocketReady(false);
       setConnectionStatus("disconnected");
     };
   }, [isStreaming, onTranscription, cleanupWebSocket]);
-
-  // Start image capture only after WebSocket is ready
-  useEffect(() => {
-    if (!isStreaming || !isWebSocketReady) return;
-
-    console.log("[Camera] Starting image capture interval");
-    imageIntervalRef.current = setInterval(captureAndSendImage, 1000);
-
-    return () => {
-      if (imageIntervalRef.current) {
-        clearInterval(imageIntervalRef.current);
-        imageIntervalRef.current = null;
-      }
-    };
-  }, [isStreaming, isWebSocketReady]);
 
   // Update audio processing setup
   useEffect(() => {
@@ -201,7 +158,7 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
             numberOfOutputs: 1,
             processorOptions: {
               sampleRate: 16000,
-              bufferSize: 4096, // Larger buffer size like original
+              bufferSize: 4096,
             },
             channelCount: 1,
             channelCountMode: "explicit",
@@ -240,7 +197,7 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
       }
     };
 
-    console.log("[Camera] Starting audio processing setup");
+    console.log("[Audio] Starting audio processing setup");
     setupAudioProcessing();
 
     return () => {
@@ -254,37 +211,26 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
     };
   }, [isStreaming, stream, isWebSocketReady, isModelSpeaking]);
 
-  // Capture and send image
-  const captureAndSendImage = () => {
-    if (!videoRef.current || !videoCanvasRef.current || !geminiWsRef.current)
-      return;
-
-    const canvas = videoCanvasRef.current;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-
-    // Set canvas size to match video
-    canvas.width = videoRef.current.videoWidth;
-    canvas.height = videoRef.current.videoHeight;
-
-    // Draw video frame to canvas
-    context.drawImage(videoRef.current, 0, 0);
-
-    // Convert to base64 and send
-    const imageData = canvas.toDataURL("image/jpeg", 0.8);
-    const b64Data = imageData.split(",")[1];
-    geminiWsRef.current.sendMediaChunk(b64Data, "image/jpeg");
-  };
-
   return (
     <div className="space-y-4">
-      <div className="relative">
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          className="w-[640px] h-[480px] bg-muted rounded-lg overflow-hidden"
-        />
+      <div className="relative bg-muted rounded-lg w-[640px] h-[150px] flex items-center justify-center">
+        {isStreaming ? (
+          <div className="text-center space-y-2">
+            <div className="text-lg font-medium">Microphone Active</div>
+            <div className="text-sm text-muted-foreground">
+              {connectionStatus === "connected"
+                ? "Connected to Gemini"
+                : "Connecting..."}
+            </div>
+          </div>
+        ) : (
+          <div className="text-center space-y-2">
+            <div className="text-lg font-medium">Microphone Inactive</div>
+            <div className="text-sm text-muted-foreground">
+              Click the button below to start
+            </div>
+          </div>
+        )}
 
         {/* Connection Status Overlay */}
         {isStreaming && connectionStatus !== "connected" && (
@@ -304,7 +250,7 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
         )}
 
         <Button
-          onClick={toggleCamera}
+          onClick={toggleMicrophone}
           size="icon"
           className={`absolute left-1/2 bottom-4 -translate-x-1/2 rounded-full w-12 h-12 backdrop-blur-sm transition-colors
             ${
@@ -314,9 +260,9 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
             }`}
         >
           {isStreaming ? (
-            <VideoOff className="h-6 w-6" />
+            <MicOff className="h-6 w-6" />
           ) : (
-            <Video className="h-6 w-6" />
+            <Mic className="h-6 w-6" />
           )}
         </Button>
       </div>
@@ -331,7 +277,6 @@ export default function CameraPreview({ onTranscription }: CameraPreviewProps) {
           />
         </div>
       )}
-      <canvas ref={videoCanvasRef} className="hidden" />
     </div>
   );
 }

@@ -1,10 +1,14 @@
 import time
+import os
 from typing import Any, Dict
 
 from uagents import Agent, Context, Model
+from dotenv import load_dotenv
 
+load_dotenv()
 
-# Define your models
+ORCHESTRATOR_ADDRESS = os.getenv("ORCHESTRATOR_ADDRESS")
+
 class Request(Model):
     action: str
     target: str
@@ -26,8 +30,6 @@ agent = Agent(
         mailbox=True,
     )
 
-ZEUS = "zeus"
-
 @agent.on_rest_post("/query", Request, Response)
 async def handle_post(ctx: Context, req: Request) -> Response:
     ctx.logger.info(f"Received request: {req}")
@@ -35,7 +37,10 @@ async def handle_post(ctx: Context, req: Request) -> Response:
     ctx.logger.info(f"Target: {req.target}")
     ctx.logger.info(f"Raw Text: {req.rawText}")
 
-    # await ctx.send(ZEUS, Message(message = 'Hi Second Agent, this is the first agent.'))
+    await ctx.send(
+        ORCHESTRATOR_ADDRESS,
+        req
+    )
 
     return Response(
         text="I've sent your request to the second agent.",

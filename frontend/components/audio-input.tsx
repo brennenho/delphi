@@ -7,19 +7,15 @@ import { GeminiWebSocket } from "../app/services/geminiWebSocket";
 import { TranscriptionService } from "../app/services/transcriptionService";
 import { TtsService } from "../app/services/ttsService";
 import { pcmToWav } from "../app/utils/audioUtils";
-import { Button } from "./ui/button";
 
 /* ───── VAD tuning ───── */
-const START_LEVEL = 5; // % that counts as “voice has started”
-const SILENCE_LEVEL = 5; // % considered “quiet”
+const START_LEVEL = 5; // % that counts as "voice has started"
+const SILENCE_LEVEL = 5; // % considered "quiet"
 const SILENCE_MS = 1500; // pause that ends an utterance
 const SAMPLE_RATE = 16000;
 
 interface AudioInputProps {
-  onTranscription: (
-    text: string,
-    speaker: "human" | "gemini" | "backend"
-  ) => void;
+  onTranscription: (text: string, speaker: "human" | "gemini") => void;
 }
 
 export default function AudioInput({ onTranscription }: AudioInputProps) {
@@ -402,71 +398,106 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
     };
   }, [isStreaming, stream, isWebSocketReady, flushUserAudio]);
 
-  /* ───── UI (unchanged except prop) ───── */
+  // Calculate the number of wave circles to display based on audio level
+  const getWaveCircles = () => {
+    const activeLevel = isModelSpeaking ? outputAudioLevel : audioLevel;
+    // Define how many circles to show at minimum and maximum
+    const minCircles = 1;
+    const maxCircles = 4;
+
+    // Scale the number of circles based on the audio level
+    const scaledCircles = Math.max(
+      minCircles,
+      Math.round((activeLevel / 100) * maxCircles)
+    );
+
+    return Array.from({ length: maxCircles }, (_, i) => {
+      const isActive = i < scaledCircles;
+      return (
+        <div
+          key={`wave-${i}`}
+          className={`absolute rounded-full border transition-all duration-300 ${
+            isActive
+              ? isModelSpeaking
+                ? "border-blue-400 opacity-70 animate-pulse"
+                : "border-purple-400 opacity-70"
+              : "border-gray-300 opacity-10"
+          }`}
+          style={{
+            width: `${140 + i * 40}px`,
+            height: `${140 + i * 40}px`,
+            animationDelay: `${i * 0.2}s`,
+            transform: `scale(${isActive ? 1 : 0.8})`,
+          }}
+        />
+      );
+    });
+  };
+
+  /* ───── Updated UI for Siri-like interface ───── */
   return (
-    <div className="space-y-4">
-      <div className="relative bg-muted rounded-lg w-[640px] h-[150px] flex items-center justify-center">
-        {isStreaming ? (
-          <div className="text-center space-y-2">
-            <div className="text-lg font-medium">Microphone Active</div>
-            <div className="text-sm text-muted-foreground">
-              {connectionStatus === "connected"
-                ? "Connected to Gemini"
-                : "Connecting..."}
-            </div>
-          </div>
-        ) : (
-          <div className="text-center space-y-2">
-            <div className="text-lg font-medium">Microphone Inactive</div>
-            <div className="text-sm text-muted-foreground">
-              Click the button below to start
-            </div>
-          </div>
-        )}
+    <div className="flex flex-col items-center justify-center gap-3">
+      <div className="relative flex items-center justify-center h-64 w-64">
+        {/* Pulsing wave circles */}
+        {isStreaming && getWaveCircles()}
 
-        {isStreaming && connectionStatus !== "connected" && (
-          <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-lg backdrop-blur-sm">
-            <div className="text-center space-y-2">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto" />
-              <p className="text-white font-medium">
-                {connectionStatus === "connecting"
-                  ? "Connecting to Gemini..."
-                  : "Disconnected"}
-              </p>
-              <p className="text-white/70 text-sm">
-                Please wait while we establish a secure connection
-              </p>
-            </div>
-          </div>
-        )}
-
-        <Button
+        {/* Center microphone button */}
+        <button
           onClick={toggleMicrophone}
-          size="icon"
-          className={`absolute left-1/2 bottom-4 -translate-x-1/2 rounded-full w-12 h-12 backdrop-blur-sm transition-colors
-            ${
-              isStreaming
-                ? "bg-red-500/50 hover:bg-red-500/70 text-white"
-                : "bg-green-500/50 hover:bg-green-500/70 text-white"
-            }`}
+          className={`relative z-10 flex items-center justify-center w-32 h-32 rounded-full transition-all duration-300 shadow-lg ${
+            isStreaming
+              ? isModelSpeaking
+                ? "bg-blue-500"
+                : speakingRef.current
+                ? "bg-purple-500"
+                : "bg-purple-400"
+              : "bg-gray-200 hover:bg-gray-300"
+          }`}
         >
           {isStreaming ? (
-            <MicOff className="h-6 w-6" />
+            <MicOff className="h-10 w-10 text-white" />
           ) : (
-            <Mic className="h-6 w-6" />
+            <Mic className="h-10 w-10 text-gray-700" />
           )}
-        </Button>
+        </button>
+
+        {/* Status text below */}
+        <div className="absolute -bottom-12 text-center">
+          {isStreaming ? (
+            connectionStatus === "connected" ? (
+              <span className="text-sm font-medium text-gray-700">
+                {isModelSpeaking
+                  ? "AI is speaking..."
+                  : speakingRef.current
+                  ? "Listening..."
+                  : "Ready to listen"}
+              </span>
+            ) : (
+              <span className="text-sm font-medium text-amber-600">
+                Connecting...
+              </span>
+            )
+          ) : (
+            <span className="text-sm font-medium text-gray-500">
+              Tap to activate
+            </span>
+          )}
+        </div>
+
+        {/* Loading overlay when connecting */}
+        {isStreaming && connectionStatus !== "connected" && (
+          <div className="absolute inset-0 bg-black/30 flex items-center justify-center rounded-full backdrop-blur-sm z-20">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
+          </div>
+        )}
       </div>
 
+      {/* Additional debug information - can be removed in production */}
       {isStreaming && (
-        <div className="w-[640px] h-2 rounded-full bg-green-100">
-          <div
-            className="h-full rounded-full transition-all bg-green-500"
-            style={{
-              width: `${isModelSpeaking ? outputAudioLevel : audioLevel}%`,
-              transition: "width 100ms ease-out",
-            }}
-          />
+        <div className="mt-8 text-xs text-gray-500">
+          {isModelSpeaking
+            ? `AI Response Level: ${Math.round(outputAudioLevel)}%`
+            : `Mic Level: ${Math.round(audioLevel)}%`}
         </div>
       )}
     </div>

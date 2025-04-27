@@ -66,14 +66,80 @@ function BrowserIntentAgentComponent() {
   const lastResponseTimeRef = useRef<number>(0); // Track when the last response was received
   const responseCooldownPeriod = 3000; // Don't auto-mute for 3 seconds after receiving a response
 
+  // WebSocket connection
+  const wsRef = useRef<WebSocket | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
+
+  useEffect(() => {
+    // Create WebSocket connection
+    const connectWebSocket = () => {
+      const ws = new WebSocket("ws://localhost:8001/ws/1");
+
+      ws.onopen = () => {
+        console.log("WebSocket connected");
+        setIsConnected(true);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log("WebSocket received:", data);
+
+          if (data.type === "request_processed") {
+            // Add real-time updates to our UI
+            const newIntent: BrowserIntent = {
+              id: `intent-ws-${Date.now()}-${Math.random()
+                .toString(36)
+                .slice(2, 7)}`,
+              action: data.request.action,
+              target: data.request.target,
+              rawText: data.request.rawText,
+              timestamp: Date.now(),
+            };
+
+            // Update the LLM with the response
+            client.send({ text: `[UPDATE]: ${data.response}` });
+
+            // Add to our UI log
+            setIntents((prev) => [...prev, newIntent]);
+          }
+        } catch (error) {
+          console.error("Failed to process WebSocket message:", error);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log("WebSocket disconnected");
+        setIsConnected(false);
+        // Try to reconnect after 2 seconds
+        setTimeout(connectWebSocket, 2000);
+      };
+
+      ws.onerror = (error) => {
+        console.error("WebSocket error:", error);
+        ws.close();
+      };
+
+      wsRef.current = ws;
+    };
+
+    // Initial connection
+    connectWebSocket();
+
+    // Cleanup on component unmount
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [client]);
+
   // ─── 2) Tell Gemini about our function, and instruct it to call it ─────────
   useEffect(() => {
     setConfig({
       model: "models/gemini-2.0-flash-exp",
       generationConfig: {
         responseModalities: "audio",
-        temperature: 0.2, // Lower temperature for more deterministic responses
-        maxOutputTokens: 100, // Limit output length to avoid long rambling responses
         speechConfig: {
           voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
         },
@@ -157,10 +223,7 @@ function BrowserIntentAgentComponent() {
           },
         ],
       },
-      tools: [
-        { googleSearch: {} },
-        { functionDeclarations: [logIntentDeclaration] },
-      ],
+      tools: [{ functionDeclarations: [logIntentDeclaration] }],
     });
   }, [setConfig]);
 
@@ -172,33 +235,41 @@ function BrowserIntentAgentComponent() {
     // Auto-mute functionality
     if (autoMuteEnabled) {
       const now = Date.now();
-      
+
       // Don't auto-mute during the cooldown period after a response
-      const isInResponseCooldown = now - lastResponseTimeRef.current < responseCooldownPeriod;
-      
+      const isInResponseCooldown =
+        now - lastResponseTimeRef.current < responseCooldownPeriod;
+
       // If volume is above threshold, consider as speaking
       if (volume > silenceThreshold) {
         lastVolumeTimeRef.current = now;
-        
+
         // If mic was muted, unmute it
         if (muted) {
           setMuted(false);
           console.log("Auto-unmuting microphone due to detected speech");
         }
-        
+
         // Clear any existing silence timer
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current);
           silenceTimerRef.current = null;
         }
-      } 
+      }
       // If volume is below threshold and mic is not muted, start silence timer
       // But not during response cooldown period
-      else if (!muted && !isInResponseCooldown && now - lastVolumeTimeRef.current > 500) {
+      else if (
+        !muted &&
+        !isInResponseCooldown &&
+        now - lastVolumeTimeRef.current > 500
+      ) {
         if (!silenceTimerRef.current) {
           silenceTimerRef.current = window.setTimeout(() => {
             // Double-check we're not in a cooldown period before muting
-            if (Date.now() - lastResponseTimeRef.current >= responseCooldownPeriod) {
+            if (
+              Date.now() - lastResponseTimeRef.current >=
+              responseCooldownPeriod
+            ) {
               // Mute the mic after silence duration
               setMuted(true);
               console.log("Auto-muting microphone due to silence detection");
@@ -309,8 +380,8 @@ function BrowserIntentAgentComponent() {
       try {
         // Ensure we don't have any active audio playback before processing a new intent
         // This helps prevent audio overlap between responses
-        await new Promise(resolve => setTimeout(resolve, 100));
-        
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
         // Make the API call with a timeout to prevent hanging requests
         const fetchPromise = fetch("http://localhost:8000/query", {
           method: "POST",
@@ -323,25 +394,30 @@ function BrowserIntentAgentComponent() {
             rawText,
           }),
         });
-        
+
         // Add a timeout to prevent hanging
         const timeoutPromise = new Promise((_, reject) => {
           setTimeout(() => reject(new Error("Request timeout")), 5000);
         });
-        
-        const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
+
+        const response = (await Promise.race([
+          fetchPromise,
+          timeoutPromise,
+        ])) as Response;
 
         if (!response.ok) {
           console.error("Failed to log intent:", response.statusText);
-          throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
+          throw new Error(
+            `HTTP error ${response.status}: ${response.statusText}`
+          );
         }
 
         const responseText = await response.text();
         console.log("Sending response to Gemini:", responseText);
-        
+
         // Add a small delay before sending the update to give time for audio to finish
-        await new Promise(resolve => setTimeout(resolve, 200));
-        
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
         // Send update to Gemini with a clear prefix format
         client.send({ text: `[UPDATE]: ${responseText}` });
 
@@ -367,17 +443,17 @@ function BrowserIntentAgentComponent() {
         });
       } catch (error) {
         console.error("Error processing intent:", error);
-        
+
         // Still acknowledge to prevent the model from hanging
         client.sendToolResponse({
           functionResponses: [
             {
               id: fc.id,
-              response: { 
-                output: { 
+              response: {
+                output: {
                   success: false,
-                  error: error instanceof Error ? error.message : String(error)
-                } 
+                  error: error instanceof Error ? error.message : String(error),
+                },
               },
             },
           ],
@@ -398,7 +474,7 @@ function BrowserIntentAgentComponent() {
 
     client.on("toolcall", onToolCall);
     client.on("content", onContent);
-    
+
     return () => {
       client.off("toolcall", onToolCall);
       client.off("content", onContent);

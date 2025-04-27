@@ -1,7 +1,7 @@
 import base64
 import os
 
-from browser_use import Agent as BrowserAgent
+from browser_use import Agent as BrowserAgent, Browser, BrowserConfig
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from uagents import Agent as UAgent
@@ -10,6 +10,12 @@ from uagents import Context, Model
 load_dotenv()
 SEED = os.getenv("BROWSER_SEED")
 VISION_AGENT_ADDRESS = os.getenv("VISION_AGENT_ADDRESS")
+
+browser = Browser(
+    config=BrowserConfig(
+        browser_binary_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    )
+)
 
 class BrowserTask(Model):
     task: str
@@ -35,7 +41,7 @@ uagent = UAgent(
 @uagent.on_message(model=BrowserTask, replies=BrowserResult)
 async def handle_browser_task(ctx: Context, sender: str, req: BrowserTask):
     llm   = ChatGoogleGenerativeAI(model="gemini-2.0-flash-exp")
-    agent = BrowserAgent(task=req.task, llm=llm)
+    agent = BrowserAgent(task=req.task, llm=llm, browser=browser)
 
     step_counter = 0
 
@@ -82,3 +88,5 @@ async def handle_browser_task(ctx: Context, sender: str, req: BrowserTask):
 
 if __name__ == "__main__":
     uagent.run()
+    import asyncio
+    asyncio.run(browser.close())

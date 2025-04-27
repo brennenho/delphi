@@ -86,8 +86,16 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
       );
 
       if (isBrowserQuery) {
-        // Handle browser query
         console.log("Browser query detected:", isBrowserQuery);
+        await fetch("http://localhost:8000/query", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            text: text,
+          }),
+        });
       }
     } catch (err) {
       console.error("[UserTranscription] error:", err);

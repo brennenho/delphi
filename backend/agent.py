@@ -11,9 +11,7 @@ from uagents import Agent, Context, Model
 
 # Define your models
 class Request(Model):
-    action: str
-    target: str
-    rawText: str
+    text: str
 
 class Response(Model):
     text: str
@@ -59,12 +57,13 @@ class WebSocketManager:
 SEED_PHRASE = "fe27d512a581c0dad0c447bf03006c60"
 
 agent = Agent(
-        name="Hermes",
-        seed=SEED_PHRASE,
-        mailbox=True,
-    )
+    name="Hermes",
+    seed=SEED_PHRASE,
+    mailbox=True,
+)
 
 ZEUS = "zeus"
+ORCHESTRATOR_ADDRESS = "agent1qw960vhw0yv29c0fmgn8jcwspqe0xlyxldn5cp7a9hjvm6lm3cx6jjzunxh"
 
 # Initialize WebSocket manager
 ws_manager = WebSocketManager()
@@ -98,37 +97,19 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
 @agent.on_rest_post("/query", Request, Response)
 async def handle_post(ctx: Context, req: Request) -> Response:
-    ctx.logger.info(f"Received request: {req}")
-    ctx.logger.info(f"Action: {req.action}")
-    ctx.logger.info(f"Target: {req.target}")
-    ctx.logger.info(f"Raw Text: {req.rawText}")
-
-    # Process the request (this could be replaced with actual processing logic)
-    response_text = f"Processing {req.action} on {req.target}"
-    
-    # Broadcast the request and response via websocket
-
-    time.sleep(20)
-
-    await ws_manager.send_to_client("1", {"text": "Testing responses", "type": "request_processed", "action": "TESTING"})
-
+    ctx.logger.info(f"[Hermes] Received /query: {req.text}")
+    await ctx.send(ORCHESTRATOR_ADDRESS, req)
     return Response(
-        text=response_text,
+        text="I've sent your request to the orchestrator.",
         agent_address=ctx.agent.address,
     )
 
-async def start_fastapi():
-    import uvicorn
-    config = uvicorn.Config(app, host="0.0.0.0", port=8001)
-    server = uvicorn.Server(config)
-    await server.serve()
+@agent.on_message(model=Response)
+async def handle_response(ctx: Context, sender: str, res: Response):
+    # this is where you'd hook in your TTS or voice-output
+    ctx.logger.info(f"[Hermes → user] {res.text}")
+    # e.g. speak(res.text)
 
 if __name__ == "__main__":
-    # Run FastAPI in a separate task
-    import nest_asyncio
-    nest_asyncio.apply()
-    
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_fastapi())
-    
+    print("Starting Hermes voice agent…")
     agent.run()

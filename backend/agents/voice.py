@@ -6,8 +6,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from uagents import Agent, Context, Model
 
-
-# Define your models
 class Request(Model):
     text: str
 
@@ -22,7 +20,7 @@ class Message(Model):
 class WebSocketManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
-        self.client_map: Dict[str, WebSocket] = {}  # Map client IDs to WebSocket connections
+        self.client_map: Dict[str, WebSocket] = {} 
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()

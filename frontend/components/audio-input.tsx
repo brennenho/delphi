@@ -16,7 +16,10 @@ const SILENCE_MS = 1500; // pause that ends an utterance
 const SAMPLE_RATE = 16000;
 
 interface AudioInputProps {
-  onTranscription: (text: string, speaker: "human" | "gemini") => void;
+  onTranscription: (
+    text: string,
+    speaker: "human" | "gemini" | "backend"
+  ) => void;
 }
 
 export default function AudioInput({ onTranscription }: AudioInputProps) {
@@ -99,7 +102,7 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
 
       if (isBrowserQuery) {
         console.log("Browser query detected:", isBrowserQuery);
-        await fetch("http://localhost:8000/query", {
+        await fetch("http://localhost:8004/query", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -215,16 +218,23 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
         if (data.message) {
           console.log("[Backend WebSocket] Received message:", data.message);
 
+          // First, pause any ongoing Gemini audio to avoid overlap
           if (geminiWsRef.current) {
             geminiWsRef.current.pauseAudio();
           }
 
-          if (ttsServiceRef.current) {
-            await ttsServiceRef.current.speak(data.message);
+          // Feed the message as text input to Gemini
+          if (geminiWsRef.current) {
+            // Optional: add a small delay to ensure any current audio has stopped
+            await new Promise((resolve) => setTimeout(resolve, 100));
 
-            if (geminiWsRef.current) {
-              geminiWsRef.current.resumeAudio();
-            }
+            // Send the backend message as text input to Gemini
+            geminiWsRef.current.sendTextInput(
+              `[ANNOUNCEMENT]: ${data.message}`
+            );
+
+            // Resume Gemini's audio processing
+            geminiWsRef.current.resumeAudio();
           }
         }
       } catch (error) {

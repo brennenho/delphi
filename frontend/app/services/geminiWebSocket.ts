@@ -8,7 +8,10 @@ const WS_URL = `wss://${HOST}/ws/google.ai.generativelanguage.v1alpha.Generative
 
 const SYSTEM_PROMPT = `
 You are a friendly and helpful assistant. Start by greeting the user and asking how you can assist them today.
-`;
+
+When you receive a message that begins with [ANNOUNCEMENT:], treat it as an important notification that you need to relay to the user. 
+Read the announcement verbatim, naturally incorporating it into your response. Do not reference that it was an announcement.
+For all other messages, respond normally as a helpful assistant.`;
 
 export class GeminiWebSocket {
   private ws: WebSocket | null = null;
@@ -125,6 +128,28 @@ export class GeminiWebSocket {
       this.ws.send(JSON.stringify(message));
     } catch (error) {
       console.error("[WebSocket] Error sending media chunk:", error);
+    }
+  }
+
+  public sendTextInput(text: string) {
+    if (!this.isConnected || !this.ws || !this.isSetupComplete) return;
+
+    const message = {
+      realtime_input: {
+        text_chunks: [
+          {
+            data: text,
+          },
+        ],
+      },
+    };
+
+    console.log("[TESTING] Sending text input:", message);
+
+    try {
+      this.ws.send(JSON.stringify(message));
+    } catch (error) {
+      console.error("[WebSocket] Error sending text input:", error);
     }
   }
 

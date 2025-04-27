@@ -135,12 +135,8 @@ export class GeminiWebSocket {
     if (!this.isConnected || !this.ws || !this.isSetupComplete) return;
 
     const message = {
-      realtime_input: {
-        text_chunks: [
-          {
-            data: text,
-          },
-        ],
+      content: {
+        parts: [{ text: "Hello! How are you today?" }],
       },
     };
 

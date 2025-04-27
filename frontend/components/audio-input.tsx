@@ -218,23 +218,16 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
         if (data.message) {
           console.log("[Backend WebSocket] Received message:", data.message);
 
-          // First, pause any ongoing Gemini audio to avoid overlap
           if (geminiWsRef.current) {
             geminiWsRef.current.pauseAudio();
           }
 
-          // Feed the message as text input to Gemini
-          if (geminiWsRef.current) {
-            // Optional: add a small delay to ensure any current audio has stopped
-            await new Promise((resolve) => setTimeout(resolve, 100));
+          if (ttsServiceRef.current) {
+            await ttsServiceRef.current.speak(data.message);
 
-            // Send the backend message as text input to Gemini
-            geminiWsRef.current.sendTextInput(
-              `[ANNOUNCEMENT]: ${data.message}`
-            );
-
-            // Resume Gemini's audio processing
-            geminiWsRef.current.resumeAudio();
+            if (geminiWsRef.current) {
+              geminiWsRef.current.resumeAudio();
+            }
           }
         }
       } catch (error) {
@@ -257,6 +250,75 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
       cleanupBackendWs();
     };
   }, [isStreaming, onTranscription]);
+
+  // useEffect(() => {
+  //   if (!isStreaming) {
+  //     cleanupBackendWs();
+  //     return;
+  //   }
+
+  //   if (!ttsServiceRef.current) {
+  //     ttsServiceRef.current = new TtsService((isPlaying) => {
+  //       if (!isPlaying && geminiWsRef.current && !modelSpeakingRef.current) {
+  //         geminiWsRef.current.resumeAudio();
+  //       }
+  //     });
+  //   }
+
+  //   const backendUrl = "ws://localhost:8004/ws/1";
+  //   const ws = new WebSocket(backendUrl);
+
+  //   ws.onopen = () => {
+  //     console.log("[Backend WebSocket] Connected");
+  //     setBackendConnected(true);
+  //   };
+
+  //   ws.onmessage = async (event) => {
+  //     try {
+  //       const data = JSON.parse(event.data);
+
+  //       if (data.message) {
+  //         console.log("[Backend WebSocket] Received message:", data.message);
+
+  //         // First, pause any ongoing Gemini audio to avoid overlap
+  //         if (geminiWsRef.current) {
+  //           geminiWsRef.current.pauseAudio();
+  //         }
+
+  //         // Feed the message as text input to Gemini
+  //         if (geminiWsRef.current) {
+  //           // Optional: add a small delay to ensure any current audio has stopped
+  //           await new Promise((resolve) => setTimeout(resolve, 100));
+
+  //           // Send the backend message as text input to Gemini
+  //           geminiWsRef.current.sendTextInput(
+  //             `[ANNOUNCEMENT]: ${data.message}`
+  //           );
+
+  //           // Resume Gemini's audio processing
+  //           geminiWsRef.current.resumeAudio();
+  //         }
+  //       }
+  //     } catch (error) {
+  //       console.error("[Backend WebSocket] Error processing message:", error);
+  //     }
+  //   };
+
+  //   ws.onerror = (error) => {
+  //     console.error("[Backend WebSocket] Error:", error);
+  //   };
+
+  //   ws.onclose = () => {
+  //     console.log("[Backend WebSocket] Disconnected");
+  //     setBackendConnected(false);
+  //   };
+
+  //   backendWsRef.current = ws;
+
+  //   return () => {
+  //     cleanupBackendWs();
+  //   };
+  // }, [isStreaming, onTranscription]);
 
   /* ───── AudioWorklet setup (runs once; NOT tied to modelSpeaking) ───── */
   useEffect(() => {

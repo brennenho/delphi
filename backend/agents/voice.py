@@ -1,5 +1,7 @@
+import asyncio
 from typing import Dict, List
 
+import nest_asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from uagents import Agent, Context, Model
@@ -31,6 +33,8 @@ class WebSocketManager:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
+        print(f"Broadcasting message: {message}")
+        print(f"Active connections: {len(self.active_connections)}")
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
@@ -104,8 +108,36 @@ async def handle_post(ctx: Context, req: Request) -> Response:
 async def handle_response(ctx: Context, sender: str, res: Response):
     # this is where you'd hook in your TTS or voice-output
     ctx.logger.info(f"[Hermes → user] {res.text}")
-    # e.g. speak(res.text)
+    await ws_manager.broadcast({
+        "message": res.text,
+        "agent_address": res.agent_address
+    })
 
-if __name__ == "__main__":
-    print("Starting Hermes voice agent…")
-    agent.run()
+@app.get("/")
+async def root():
+    await ws_manager.broadcast({
+        "message": "Hermes is running and ready to receive messages.",
+        "agent_address": ORCHESTRATOR_ADDRESS
+    })
+    
+    # If you want to send to a specific client (if you have client_id)
+    # client_id = "some_client_id"  # You would need to determine this
+    # await ws_manager.send_to_client(client_id, {
+    #     "text": res.text,
+    #     "agent_address": res.agent_address
+    # })
+    return {"message": "Hermes is running and ready to receive messages."}
+
+
+async def start_fastapi():
+     import uvicorn
+     config = uvicorn.Config(app, host="0.0.0.0", port=8004)
+     server = uvicorn.Server(config)
+     await server.serve()
+
+nest_asyncio.apply()
+
+loop = asyncio.get_event_loop()
+loop.create_task(start_fastapi())
+
+agent.run()

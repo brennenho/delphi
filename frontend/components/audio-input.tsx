@@ -5,6 +5,7 @@ import { Mic, MicOff } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GeminiWebSocket } from "../app/services/geminiWebSocket";
 import { TranscriptionService } from "../app/services/transcriptionService";
+import { TtsService } from "../app/services/ttsService";
 import { pcmToWav } from "../app/utils/audioUtils";
 import { Button } from "./ui/button";
 
@@ -22,13 +23,15 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
   /* ───── refs & state ───── */
   const audioCtxRef = useRef<AudioContext | null>(null);
   const geminiWsRef = useRef<GeminiWebSocket | null>(null);
+  const backendWsRef = useRef<WebSocket | null>(null);
+  const ttsServiceRef = useRef<TtsService | null>(null);
   const workletRef = useRef<AudioWorkletNode | null>(null);
 
   const userChunksRef = useRef<Uint8Array[]>([]);
   const lastVoiceMsRef = useRef<number>(0);
   const speakingRef = useRef(false);
 
-  const modelSpeakingRef = useRef(false); // ← NEW
+  const modelSpeakingRef = useRef(false);
   const [isModelSpeaking, setIsModelSpeaking] = useState(false);
 
   const transcriptionSvc = useRef(new TranscriptionService());
@@ -42,6 +45,7 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
   const [connectionStatus, setConnectionStatus] = useState<
     "disconnected" | "connecting" | "connected"
   >("disconnected");
+  const [backendConnected, setBackendConnected] = useState(false);
 
   /* ───── cleanup helpers ───── */
   const cleanupAudio = useCallback(() => {
@@ -54,6 +58,14 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
   const cleanupWs = useCallback(() => {
     geminiWsRef.current?.disconnect();
     geminiWsRef.current = null;
+  }, []);
+
+  const cleanupBackendWs = useCallback(() => {
+    if (backendWsRef.current) {
+      backendWsRef.current.close();
+      backendWsRef.current = null;
+      setBackendConnected(false);
+    }
   }, []);
 
   const sendToGemini = (b64: string) =>
@@ -116,6 +128,7 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
     if (isStreaming && stream) {
       setIsStreaming(false);
       cleanupWs();
+      cleanupBackendWs();
       cleanupAudio();
       stream.getTracks().forEach((t) => t.stop());
       setStream(null);
@@ -158,7 +171,7 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
         setConnectionStatus("connected");
       },
       (playing) => {
-        modelSpeakingRef.current = playing; // ← keep ref up-to-date
+        modelSpeakingRef.current = playing;
         setIsModelSpeaking(playing);
       },
       (lvl) => setOutputAudioLevel(lvl),
@@ -171,6 +184,69 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
       setIsWebSocketReady(false);
     };
   }, [isStreaming, handleGeminiText, cleanupWs]);
+
+  /* ───── Backend WebSocket setup ───── */
+  useEffect(() => {
+    if (!isStreaming) {
+      cleanupBackendWs();
+      return;
+    }
+
+    if (!ttsServiceRef.current) {
+      ttsServiceRef.current = new TtsService((isPlaying) => {
+        if (!isPlaying && geminiWsRef.current && !modelSpeakingRef.current) {
+          geminiWsRef.current.resumeAudio();
+        }
+      });
+    }
+
+    const backendUrl = "ws://localhost:8004/ws/1";
+    const ws = new WebSocket(backendUrl);
+
+    ws.onopen = () => {
+      console.log("[Backend WebSocket] Connected");
+      setBackendConnected(true);
+    };
+
+    ws.onmessage = async (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.message) {
+          console.log("[Backend WebSocket] Received message:", data.message);
+
+          if (geminiWsRef.current) {
+            geminiWsRef.current.pauseAudio();
+          }
+
+          if (ttsServiceRef.current) {
+            await ttsServiceRef.current.speak(data.message);
+
+            if (geminiWsRef.current) {
+              geminiWsRef.current.resumeAudio();
+            }
+          }
+        }
+      } catch (error) {
+        console.error("[Backend WebSocket] Error processing message:", error);
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error("[Backend WebSocket] Error:", error);
+    };
+
+    ws.onclose = () => {
+      console.log("[Backend WebSocket] Disconnected");
+      setBackendConnected(false);
+    };
+
+    backendWsRef.current = ws;
+
+    return () => {
+      cleanupBackendWs();
+    };
+  }, [isStreaming, onTranscription]);
 
   /* ───── AudioWorklet setup (runs once; NOT tied to modelSpeaking) ───── */
   useEffect(() => {
@@ -202,7 +278,7 @@ export default function AudioInput({ onTranscription }: AudioInputProps) {
 
         const source = ctx.createMediaStreamSource(stream);
         workletRef.current.port.onmessage = (ev) => {
-          if (!active) return; // we no longer gate on modelSpeaking here
+          if (!active) return;
 
           const { pcmData, level } = ev.data;
           setAudioLevel(level);

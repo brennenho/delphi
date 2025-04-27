@@ -28,6 +28,7 @@ export class GeminiWebSocket {
   private onTranscriptionCallback: ((text: string) => void) | null = null;
   private transcriptionService: TranscriptionService;
   private accumulatedPcmData: string[] = [];
+  private isPaused: boolean = false;
 
   constructor(
     onMessage: (text: string) => void,
@@ -156,7 +157,12 @@ export class GeminiWebSocket {
   }
 
   private async playNextInQueue() {
-    if (!this.audioContext || this.isPlaying || this.audioQueue.length === 0)
+    if (
+      !this.audioContext ||
+      this.isPlaying ||
+      this.audioQueue.length === 0 ||
+      this.isPaused
+    )
       return;
 
     try {
@@ -218,6 +224,16 @@ export class GeminiWebSocket {
     this.isPlayingResponse = false;
     this.onPlayingStateChange?.(false);
     this.audioQueue = []; // Clear queue
+  }
+
+  pauseAudio() {
+    this.stopCurrentAudio();
+    this.isPaused = true;
+  }
+
+  resumeAudio() {
+    this.isPaused = false;
+    this.playNextInQueue(); // Resume playing any queued audio
   }
 
   private async handleMessage(message: string) {

@@ -2,9 +2,7 @@ import { pcmToWav } from "../utils/audioUtils";
 import { TranscriptionService } from "./transcriptionService";
 
 const MODEL = "models/gemini-2.0-flash-live-001";
-const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-const HOST = "generativelanguage.googleapis.com";
-const WS_URL = `wss://${HOST}/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
+const WS_URL = "ws://localhost:8005/gemini";
 
 const SYSTEM_PROMPT = `
 You are an intelligent browser assistant that helps users navigate the web through voice commands.

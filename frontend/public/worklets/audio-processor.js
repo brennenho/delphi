@@ -2,7 +2,7 @@
 class AudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.bufferSize = 2048;  // Reduced from 4096 to 2048 for faster response
+    this.bufferSize = 2048; // Reduced from 4096 to 2048 for faster response
     this.accumulatedSamples = new Float32Array(this.bufferSize);
     this.sampleCount = 0;
   }
@@ -12,7 +12,11 @@ class AudioProcessor extends AudioWorkletProcessor {
     if (!input) return true;
 
     // Accumulate samples
-    for (let i = 0; i < input.length && this.sampleCount < this.bufferSize; i++) {
+    for (
+      let i = 0;
+      i < input.length && this.sampleCount < this.bufferSize;
+      i++
+    ) {
       this.accumulatedSamples[this.sampleCount++] = input[i];
     }
 
@@ -20,11 +24,11 @@ class AudioProcessor extends AudioWorkletProcessor {
     if (this.sampleCount >= this.bufferSize) {
       const pcm16 = new Int16Array(this.bufferSize);
       let sum = 0;
-      
+
       // Simple conversion like in the original implementation
       for (let i = 0; i < this.bufferSize; i++) {
         // Scale to 16-bit range directly
-        pcm16[i] = this.accumulatedSamples[i] * 0x7FFF;
+        pcm16[i] = this.accumulatedSamples[i] * 0x7fff;
         sum += Math.abs(pcm16[i]);
       }
 
@@ -35,12 +39,15 @@ class AudioProcessor extends AudioWorkletProcessor {
       });
 
       // Simplified level calculation
-      const level = (sum / (this.bufferSize * 0x7FFF)) * 100;
+      const level = (sum / (this.bufferSize * 0x7fff)) * 100;
 
-      this.port.postMessage({
-        pcmData: buffer,
-        level: Math.min(level * 5, 100)
-      }, [buffer]);
+      this.port.postMessage(
+        {
+          pcmData: buffer,
+          level: Math.min(level * 5, 100),
+        },
+        [buffer]
+      );
 
       this.sampleCount = 0;
     }
@@ -49,4 +56,4 @@ class AudioProcessor extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor('audio-processor', AudioProcessor); 
+registerProcessor("audio-processor", AudioProcessor);

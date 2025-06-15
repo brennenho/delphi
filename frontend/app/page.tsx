@@ -20,11 +20,11 @@ export default function Home() {
       {/* Header with pulsing mic icon */}
       <header className="flex items-center space-x-3">
         <Mic className="w-12 h-12 text-black" />
-        <h1 className="text-5xl sm:text-6xl  text-gray-900">Delphi</h1>
+        <h1 className="text-5xl sm:text-6xl text-gray-900">Delphi</h1>
       </header>
 
       {/* Glassmorphic card around AudioInput */}
-      <div className="w-full max-w-sm rounded-2xl">
+      <div className="w-full sm:w-auto max-w-sm rounded-2xl mx-auto">
         <AudioInput onTranscription={handleTranscription} />
       </div>
     </main>

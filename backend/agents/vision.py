@@ -1,8 +1,9 @@
-import os, base64
+import base64
+import os
 from io import BytesIO
-from dotenv import load_dotenv
-import google.generativeai as genai
 
+import google.generativeai as genai
+from dotenv import load_dotenv
 from uagents import Agent, Context, Model
 
 load_dotenv()

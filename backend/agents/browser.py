@@ -1,6 +1,4 @@
-import base64
 import os
-import asyncio
 
 from browser_use import Agent as BrowserAgent
 from browser_use import BrowserSession

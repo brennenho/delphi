@@ -82,8 +82,4 @@ async def analyze(ctx: Context, sender: str, msg: ScreenshotTask):
         ctx.logger.error(f"Error in analyze: {e}")
 
 if __name__ == "__main__":
-    print(f"Starting Vision Agent (theia) on port 8003...")
-    print(f"Agent address: {theia.address}")
-    print(f"Listening at: http://127.0.0.1:8003/submit")
-    print(f"Make sure browser agent is configured to use this local endpoint")
     theia.run()

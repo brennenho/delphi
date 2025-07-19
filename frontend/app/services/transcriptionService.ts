@@ -1,15 +1,9 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
-const genAI = new GoogleGenerativeAI(
-  process.env.NEXT_PUBLIC_GEMINI_API_KEY || ""
-);
-const MODEL_NAME = "gemini-1.5-flash";
+const BACKEND_HOST = process.env.NEXT_PUBLIC_BACKEND_HOST || "localhost:8004";
+const BACKEND_URL = `http://${BACKEND_HOST}`;
 
 export class TranscriptionService {
-  private model;
-
   constructor() {
-    this.model = genAI.getGenerativeModel({ model: MODEL_NAME });
+    // No longer need to initialize a model - using backend API
   }
 
   async transcribeAudio(
@@ -17,19 +11,23 @@ export class TranscriptionService {
     mimeType: string = "audio/wav"
   ): Promise<string> {
     try {
-      const result = await this.model.generateContent([
-        {
-          inlineData: {
-            mimeType: mimeType,
-            data: audioBase64,
-          },
+      const response = await fetch(`${BACKEND_URL}/transcribe`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-        {
-          text: "Please transcribe the spoken language in this audio accurately. Ignore any background noise or non-speech sounds.",
-        },
-      ]);
+        body: JSON.stringify({
+          audioBase64: audioBase64,
+          mimeType: mimeType,
+        }),
+      });
 
-      return result.response.text();
+      if (!response.ok) {
+        throw new Error(`Transcription failed: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      return result.transcription;
     } catch (error) {
       console.error("Transcription error:", error);
       throw error;
@@ -46,37 +44,24 @@ export class TranscriptionService {
     }
 
     try {
-      const result = await this.model.generateContent([
-        {
-          text: `Determine if the following user query is related to browser tasks, web navigation, web search, opening websites, 
-          interacting with web content, or other web-related activities.
-
-          Examples of browser queries:
-          - "Search for Italian restaurants near me"
-          - "Go to nytimes.com"
-          - "Open my Gmail"
-          - "Show me the weather forecast"
-          - "Find cheap flights to Paris"
-          - "Navigate to YouTube"
-          - "Look up how to bake chocolate cookies"
-          
-          Examples of non-browser queries:
-          - "What's your name?"
-          - "Tell me a joke"
-          - "Can you write a poem?"
-          - "What's the meaning of life?"
-          - "Describe your capabilities"
-          
-          User query: "${transcribedText.trim()}"
-          
-          Respond with ONLY "BROWSER_QUERY" if it's a browser-related query, or "NOT_BROWSER_QUERY" if it's not.`,
+      const response = await fetch(`${BACKEND_URL}/browser-query`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-      ]);
+        body: JSON.stringify({
+          text: transcribedText.trim(),
+        }),
+      });
 
-      const classification = result.response.text().trim();
+      if (!response.ok) {
+        throw new Error(`Classification failed: ${response.statusText}`);
+      }
 
-      if (classification === "BROWSER_QUERY") {
-        return transcribedText.trim();
+      const result = await response.json();
+      
+      if (result.isBrowserQuery) {
+        return result.query;
       } else {
         return null;
       }

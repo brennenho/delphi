@@ -2,9 +2,8 @@ import { pcmToWav } from "../utils/audioUtils";
 import { TranscriptionService } from "./transcriptionService";
 
 const MODEL = "models/gemini-2.0-flash-live-001";
-const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-const HOST = "generativelanguage.googleapis.com";
-const WS_URL = `wss://${HOST}/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
+const BACKEND_HOST = process.env.NEXT_PUBLIC_BACKEND_HOST || "localhost:8004";
+const WS_URL = `ws://${BACKEND_HOST}/gemini-proxy`;
 
 const SYSTEM_PROMPT = `
 You are an intelligent browser assistant that helps users navigate the web through voice commands.
@@ -84,7 +83,9 @@ export class GeminiWebSocket {
       return;
     }
 
-    this.ws = new WebSocket(WS_URL);
+    // Use a client ID for this connection
+    const clientId = Math.random().toString(36).substring(7);
+    this.ws = new WebSocket(`${WS_URL}/${clientId}`);
 
     this.ws.onopen = () => {
       this.isConnected = true;

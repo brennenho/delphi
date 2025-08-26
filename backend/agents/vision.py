@@ -55,8 +55,37 @@ performance_stats = {
     "total_processing_time": 0,
     "average_processing_time": 0,
     "vision_api_calls": 0,
-    "vision_api_time": 0
+    "vision_api_time": 0,
+    "last_update": 0,
+    "descriptions_sent": 0,
+    "errors": 0
 }
+
+# Enhanced logging for monitoring
+def log_performance_metrics():
+    """Log detailed performance metrics"""
+    current_time = time.time()
+    if current_time - performance_stats["last_update"] > 30:  # Log every 30 seconds
+        logger.info("="*60)
+        logger.info("VISION AGENT PERFORMANCE METRICS")
+        logger.info("="*60)
+        logger.info(f"Total Screenshots Received: {performance_stats['total_screenshots']}")
+        logger.info(f"Screenshots Processed: {performance_stats['processed_screenshots']}")
+        logger.info(f"Duplicates Skipped: {performance_stats['skipped_duplicates']}")
+        logger.info(f"Descriptions Sent: {performance_stats['descriptions_sent']}")
+        logger.info(f"Errors: {performance_stats['errors']}")
+        logger.info(f"Vision API Calls: {performance_stats['vision_api_calls']}")
+        
+        if performance_stats['processed_screenshots'] > 0:
+            logger.info(f"Average Processing Time: {performance_stats['average_processing_time']:.2f}s")
+            avg_api_time = performance_stats['vision_api_time'] / performance_stats['vision_api_calls']
+            logger.info(f"Average API Response Time: {avg_api_time:.2f}s")
+            
+        processing_rate = performance_stats['processed_screenshots'] / performance_stats['total_screenshots'] * 100 if performance_stats['total_screenshots'] > 0 else 0
+        logger.info(f"Processing Rate: {processing_rate:.1f}%")
+        logger.info("="*60)
+        
+        performance_stats["last_update"] = current_time
 
 def compute_image_hash(image_data: str) -> str:
     """Compute hash of image data for deduplication"""
@@ -202,15 +231,18 @@ async def analyze(ctx: Context, sender: str, msg: ScreenshotTask):
                     agent_address=ctx.agent.address
                 ))
                 
+                performance_stats["descriptions_sent"] += 1
                 logger.info(f"Sent description to voice agent: {analysis}")
             else:
                 logger.info(f"Skipped sending duplicate/similar analysis: {analysis}")
 
         except Exception as upload_error:
             logger.error(f"Error processing image: {upload_error}")
+            performance_stats["errors"] += 1
             
     except Exception as e:
         logger.error(f"Error in analyze: {e}")
+        performance_stats["errors"] += 1
     
     finally:
         # Update performance stats
@@ -218,6 +250,9 @@ async def analyze(ctx: Context, sender: str, msg: ScreenshotTask):
         processing_time = end_time - start_time
         api_time = api_end_time - api_start_time if api_start_time > 0 else 0
         update_performance_stats(processing_time, api_time, was_processed)
+        
+        # Log performance metrics periodically
+        log_performance_metrics()
 
 if __name__ == "__main__":
     logger.info(f"Theia Vision Agent starting on port {theia.port}")

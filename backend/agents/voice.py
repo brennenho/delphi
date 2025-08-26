@@ -4,6 +4,10 @@ import os
 import base64
 from typing import Dict, List
 import logging
+import tempfile
+import subprocess
+import hashlib
+import time
 
 import nest_asyncio
 import websockets
@@ -56,6 +60,155 @@ class TTSRequest(BaseModel):
 class TTSResponse(BaseModel):
     audioBase64: str
     mimeType: str = "audio/mp3"
+
+# TTS Configuration and state management
+class TTSManager:
+    def __init__(self):
+        self.last_tts_time = 0
+        self.tts_queue = []
+        self.processing_tts = False
+        self.last_description_hash = None
+        
+    async def generate_speech(self, text: str) -> str:
+        """Generate speech using available TTS services"""
+        try:
+            # Try Google TTS first (if available)
+            if os.getenv("GOOGLE_CLOUD_TTS_KEY"):
+                return await self._generate_google_tts(text)
+            
+            # Fallback to espeak (system TTS) 
+            return await self._generate_espeak_tts(text)
+            
+        except Exception as e:
+            logger.error(f"TTS generation failed: {e}")
+            # Return text as base64 as final fallback
+            return base64.b64encode(text.encode()).decode()
+    
+    async def _generate_google_tts(self, text: str) -> str:
+        """Generate TTS using Google Cloud Text-to-Speech"""
+        try:
+            from google.cloud import texttospeech
+            
+            client = texttospeech.TextToSpeechClient()
+            
+            synthesis_input = texttospeech.SynthesisInput(text=text)
+            voice = texttospeech.VoiceSelectionParams(
+                language_code="en-US",
+                ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+            )
+            audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.MP3
+            )
+            
+            response = client.synthesize_speech(
+                input=synthesis_input, voice=voice, audio_config=audio_config
+            )
+            
+            return base64.b64encode(response.audio_content).decode()
+            
+        except ImportError:
+            logger.warning("Google Cloud TTS not available, falling back to system TTS")
+            return await self._generate_espeak_tts(text)
+        except Exception as e:
+            logger.error(f"Google TTS error: {e}")
+            return await self._generate_espeak_tts(text)
+    
+    async def _generate_espeak_tts(self, text: str) -> str:
+        """Generate TTS using espeak (system TTS)"""
+        try:
+            # Create temporary file for audio output
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                temp_path = temp_file.name
+            
+            # Use espeak to generate speech
+            cmd = [
+                "espeak", 
+                "-s", "160",  # Speed
+                "-p", "50",   # Pitch
+                "-a", "100",  # Amplitude
+                "-v", "en+f3", # Voice (female variant)
+                "-w", temp_path,  # Output to wav file
+                text
+            ]
+            
+            # Run espeak in subprocess
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await process.communicate()
+            
+            # Read the generated audio file
+            with open(temp_path, "rb") as audio_file:
+                audio_data = audio_file.read()
+            
+            # Clean up temp file
+            os.unlink(temp_path)
+            
+            return base64.b64encode(audio_data).decode()
+            
+        except Exception as e:
+            logger.error(f"Espeak TTS error: {e}")
+            # Final fallback - return empty audio or text
+            return base64.b64encode(b"").decode()
+    
+    def should_generate_tts(self, text: str) -> bool:
+        """Determine if TTS should be generated for this text"""
+        current_time = time.time()
+        
+        # Rate limiting - don't generate TTS more than once every 2 seconds
+        if current_time - self.last_tts_time < 2:
+            return False
+        
+        # Avoid duplicate TTS for same content
+        text_hash = hashlib.md5(text.encode()).hexdigest()
+        if text_hash == self.last_description_hash:
+            return False
+            
+        self.last_description_hash = text_hash
+        self.last_tts_time = current_time
+        return True
+    
+    async def queue_tts(self, text: str):
+        """Queue TTS generation for processing"""
+        if self.should_generate_tts(text):
+            self.tts_queue.append(text)
+            if not self.processing_tts:
+                await self._process_tts_queue()
+    
+    async def _process_tts_queue(self):
+        """Process queued TTS requests"""
+        if self.processing_tts:
+            return
+            
+        self.processing_tts = True
+        
+        try:
+            while self.tts_queue:
+                text = self.tts_queue.pop(0)
+                logger.info(f"Generating TTS for: {text}")
+                
+                audio_data = await self.generate_speech(text)
+                
+                # Broadcast TTS audio to connected clients
+                message = {
+                    "type": "tts_audio",
+                    "audio_base64": audio_data,
+                    "mime_type": "audio/wav",
+                    "text": text,
+                    "timestamp": time.time()
+                }
+                await ws_manager.broadcast(message)
+                logger.info(f"TTS audio broadcasted for: {text[:50]}...")
+                
+        except Exception as e:
+            logger.error(f"Error processing TTS queue: {e}")
+        finally:
+            self.processing_tts = False
+
+# Initialize TTS manager
+tts_manager = TTSManager()
 
 class GeminiWebSocketProxy:
     def __init__(self):
@@ -165,14 +318,18 @@ class WebSocketManager:
             pass
 
     async def broadcast_vision_description(self, description: str):
-        """Broadcast vision description to all connected clients"""
+        """Broadcast vision description to all connected clients and generate TTS"""
         message = {
             "type": "vision_description",
             "message": description,
             "timestamp": asyncio.get_event_loop().time()
         }
         await self.broadcast(message)
-        logger.info(f"Broadcasted vision description: {description}")
+        
+        # Also generate TTS for the description
+        await tts_manager.queue_tts(description)
+        
+        logger.info(f"Broadcasted vision description with TTS: {description}")
 
 
 SEED_PHRASE = "fe27d512a581c0dad0c447bf03006c60"
@@ -296,33 +453,17 @@ async def handle_response(ctx: Context, _sender: str, res: Response):
         await ws_manager.broadcast_vision_description(res.text)
         ctx.logger.info(f"Processed vision description: {res.text}")
 
-async def generate_tts(text: str) -> str:
-    """Generate TTS audio from text using Gemini"""
-    try:
-        import google.generativeai as genai
-        
-        # Configure Gemini
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-        model = genai.GenerativeModel("gemini-1.5-flash-002")
-        
-        # For now, we'll just return the text as this would require
-        # additional TTS service integration (like Google Cloud TTS)
-        # This is a placeholder for TTS functionality
-        logger.info(f"TTS requested for: {text}")
-        return base64.b64encode(text.encode()).decode()  # Placeholder
-        
-    except Exception as e:
-        logger.error(f"TTS generation error: {e}")
-        raise
+
 
 @app.post("/tts", response_model=TTSResponse)
 @limiter.limit("20/minute")
 async def text_to_speech(request: FastAPIRequest, tts_request: TTSRequest):
     try:
-        audio_base64 = await generate_tts(tts_request.text)
+        # Generate TTS directly for API endpoint
+        audio_base64 = await tts_manager.generate_speech(tts_request.text)
         return TTSResponse(
             audioBase64=audio_base64,
-            mimeType="audio/mp3"
+            mimeType="audio/wav"
         )
     except Exception as e:
         logger.error(f"TTS error: {e}")

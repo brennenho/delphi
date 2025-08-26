@@ -3,6 +3,7 @@ import json
 import os
 import base64
 from typing import Dict, List
+import logging
 
 import nest_asyncio
 import websockets
@@ -18,6 +19,10 @@ from pydantic import BaseModel
 
 # Load environment variables
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class AgentRequest(Model):
     text: str
@@ -43,6 +48,14 @@ class BrowserQueryRequest(BaseModel):
 class BrowserQueryResponse(BaseModel):
     isBrowserQuery: bool
     query: str = None
+
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = "en-US-Journey-F"
+
+class TTSResponse(BaseModel):
+    audioBase64: str
+    mimeType: str = "audio/mp3"
 
 class GeminiWebSocketProxy:
     def __init__(self):
@@ -150,6 +163,16 @@ class WebSocketManager:
         else:
             # Client not found or not connected
             pass
+
+    async def broadcast_vision_description(self, description: str):
+        """Broadcast vision description to all connected clients"""
+        message = {
+            "type": "vision_description",
+            "message": description,
+            "timestamp": asyncio.get_event_loop().time()
+        }
+        await self.broadcast(message)
+        logger.info(f"Broadcasted vision description: {description}")
 
 
 SEED_PHRASE = "fe27d512a581c0dad0c447bf03006c60"
@@ -259,12 +282,51 @@ async def handle_post(ctx: Context, req: AgentRequest) -> Response:
 
 @agent.on_message(model=Response)
 async def handle_response(ctx: Context, _sender: str, res: Response):
-    # this is where you'd hook in your TTS or voice-output
+    # Handle responses from other agents, including vision descriptions
     ctx.logger.info(f"[Hermes → user] {res.text}")
+    
+    # Broadcast to WebSocket clients
     await ws_manager.broadcast({
         "message": res.text,
         "agent_address": res.agent_address
     })
+    
+    # Check if this is a vision description and broadcast specially
+    if "I " in res.text and any(word in res.text.lower() for word in ["clicked", "typed", "opened", "see", "navigated"]):
+        await ws_manager.broadcast_vision_description(res.text)
+        ctx.logger.info(f"Processed vision description: {res.text}")
+
+async def generate_tts(text: str) -> str:
+    """Generate TTS audio from text using Gemini"""
+    try:
+        import google.generativeai as genai
+        
+        # Configure Gemini
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        model = genai.GenerativeModel("gemini-1.5-flash-002")
+        
+        # For now, we'll just return the text as this would require
+        # additional TTS service integration (like Google Cloud TTS)
+        # This is a placeholder for TTS functionality
+        logger.info(f"TTS requested for: {text}")
+        return base64.b64encode(text.encode()).decode()  # Placeholder
+        
+    except Exception as e:
+        logger.error(f"TTS generation error: {e}")
+        raise
+
+@app.post("/tts", response_model=TTSResponse)
+@limiter.limit("20/minute")
+async def text_to_speech(request: FastAPIRequest, tts_request: TTSRequest):
+    try:
+        audio_base64 = await generate_tts(tts_request.text)
+        return TTSResponse(
+            audioBase64=audio_base64,
+            mimeType="audio/mp3"
+        )
+    except Exception as e:
+        logger.error(f"TTS error: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS failed: {str(e)}")
 
 @app.post("/transcribe", response_model=TranscriptionResponse)
 @limiter.limit("10/minute")
@@ -274,7 +336,7 @@ async def transcribe_audio(request: FastAPIRequest, transcription_request: Trans
         
         # Configure Gemini
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash-002")
         
         # Decode base64 audio data
         audio_data = base64.b64decode(transcription_request.audioBase64)
@@ -308,7 +370,7 @@ async def classify_browser_query(request: FastAPIRequest, query_request: Browser
         
         # Configure Gemini
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash-002")
         
         classification_prompt = f"""Determine if the following user query is related to browser tasks, web navigation, web search, opening websites, 
 interacting with web content, or other web-related activities.
@@ -354,18 +416,12 @@ async def root():
         "agent_address": ORCHESTRATOR_ADDRESS
     })
     
-    # If you want to send to a specific client (if you have client_id)
-    # client_id = "some_client_id"  # You would need to determine this
-    # await ws_manager.send_to_client(client_id, {
-    #     "text": res.text,
-    #     "agent_address": res.agent_address
-    # })
     return {"message": "Hermes is running and ready to receive messages."}
 
 
 async def start_fastapi():
      import uvicorn
-     config = uvicorn.Config(app, host="0.0.0.0", port=8004)
+     config = uvicorn.Config(app, host="0.0.0.0", port=8000)  # Changed port to 8000
      server = uvicorn.Server(config)
      await server.serve()
 

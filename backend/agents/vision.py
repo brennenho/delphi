@@ -1,5 +1,8 @@
 import base64
 import os
+import hashlib
+import time
+import logging
 from io import BytesIO
 
 import google.generativeai as genai
@@ -7,6 +10,10 @@ from dotenv import load_dotenv
 from uagents import Agent, Context, Model
 
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("Theia-Vision")
 
 class ScreenshotTask(Model):
     image: str
@@ -16,71 +23,203 @@ class Response(Model):
     text: str
     agent_address: str
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-2.0-flash-exp")
+class VisionDescription(Model):
+    description: str
+    timestamp: float
+    step_info: str
 
-HERMES_ADDRESS = os.getenv("HERMES_ADDRESS")
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel("gemini-1.5-pro")
+
+HERMES_ADDRESS = os.getenv("HERMES_ADDRESS", "agent1qfpqn9jhvp8w6ka6wkqkz9bx7h8hmrkn3wfq7zu4lcttn8nthrx4eyzd6t4")
 
 SEED = "theia-random-secure-seed"
 theia = Agent(
     name="theia", 
     seed=SEED, 
     endpoint=["http://127.0.0.1:8003/submit"],
-    port=8003,
+    port=int(os.getenv("VISION_PORT", 8003)),
     mailbox=False
 )
 
+# Global state for tracking screenshots and descriptions
+screenshot_history = []
+analysis_history = []
+last_description_time = 0
+
+# Performance monitoring
+performance_stats = {
+    "total_screenshots": 0,
+    "processed_screenshots": 0,
+    "skipped_duplicates": 0,
+    "total_processing_time": 0,
+    "average_processing_time": 0,
+    "vision_api_calls": 0,
+    "vision_api_time": 0
+}
+
+def compute_image_hash(image_data: str) -> str:
+    """Compute hash of image data for deduplication"""
+    return hashlib.md5(image_data.encode()).hexdigest()
+
+def is_duplicate_screenshot(image_hash: str) -> bool:
+    """Check if this screenshot is a duplicate of recent ones"""
+    return image_hash in screenshot_history[-3:]  # Check last 3 screenshots
+
+def should_generate_description(analysis: str) -> bool:
+    """Determine if we should generate a new description"""
+    global last_description_time
+    
+    # Avoid identical descriptions within 2 seconds
+    current_time = time.time()
+    if current_time - last_description_time < 2:
+        logger.debug(f"Skipping description due to time threshold: {analysis}")
+        return False
+    
+    # Check if analysis is too similar to recent ones
+    for recent_analysis in analysis_history[-2:]:
+        if analysis.lower().strip() == recent_analysis.lower().strip():
+            logger.debug(f"Skipping duplicate analysis: {analysis}")
+            return False
+    
+    # Filter out generic or unhelpful responses
+    unhelpful_phrases = [
+        "loading", "please wait", "no change", "same as before", 
+        "similar to previous", "unchanged", "identical"
+    ]
+    
+    if any(phrase in analysis.lower() for phrase in unhelpful_phrases):
+        logger.debug(f"Skipping unhelpful analysis: {analysis}")
+        return False
+    
+    return True
+
+def update_performance_stats(processing_time: float, api_time: float, was_processed: bool):
+    """Update performance statistics"""
+    global performance_stats
+    
+    performance_stats["total_screenshots"] += 1
+    if was_processed:
+        performance_stats["processed_screenshots"] += 1
+        performance_stats["total_processing_time"] += processing_time
+        performance_stats["average_processing_time"] = (
+            performance_stats["total_processing_time"] / performance_stats["processed_screenshots"]
+        )
+        performance_stats["vision_api_calls"] += 1
+        performance_stats["vision_api_time"] += api_time
+    else:
+        performance_stats["skipped_duplicates"] += 1
+    
+    # Log stats every 10 screenshots
+    if performance_stats["total_screenshots"] % 10 == 0:
+        logger.info(f"Performance Stats: {performance_stats}")
+
 @theia.on_message(model=ScreenshotTask)
 async def analyze(ctx: Context, sender: str, msg: ScreenshotTask):
+    start_time = time.time()
+    api_start_time = 0
+    api_end_time = 0
+    was_processed = False
+    
     try:
-        ctx.logger.info(f"Received {msg.step_info} screenshot for analysis")
+        logger.info(f"Received {msg.step_info} screenshot for analysis")
+        
+        # Compute image hash for deduplication
+        image_hash = compute_image_hash(msg.image)
+        
+        # Skip if this is a duplicate screenshot
+        if is_duplicate_screenshot(image_hash):
+            logger.info(f"Skipping duplicate screenshot for {msg.step_info}")
+            return
+        
+        # Add to history
+        screenshot_history.append(image_hash)
+        if len(screenshot_history) > 10:  # Keep only last 10 hashes
+            screenshot_history.pop(0)
 
         prompt = [
             """
-            Input: A base64-encoded browser screenshot from the current step in a task sequence.
+            You are analyzing a browser screenshot during automated web navigation. Your job is to describe what just happened in this step in a natural, conversational way as if you performed the action yourself.
 
-            Task: Describe what happened in this step or what is visible on the screen in a natural, conversational first-person phrase as if you performed the action yourself.
+            Guidelines:
+            1. Use first-person language ("I clicked", "I typed", "I see")
+            2. Be specific about what action was performed or what changed
+            3. Focus on the most significant element or action visible
+            4. Keep descriptions concise but informative (1-2 sentences max)
+            5. Only describe meaningful changes or actions, not static content
+            6. If the page is loading or unchanged, say "I'm waiting for the page to load"
 
-            Response format: Return only the descriptive phrase without any explanations or additional text. The phrase should be clear, concise, and suitable for voice output.
+            Examples of good descriptions:
+            - "I clicked the search button and now I'm seeing search results"
+            - "I typed 'wireless headphones' in the search box"
+            - "I clicked on the first product listing"
+            - "I added the item to my shopping cart"
+            - "I'm navigating to the checkout page"
+            - "I filled in my email address in the login form"
 
-            Examples:
-            - "I opened Amazon's homepage"
-            - "I typed 'keyboards' into the search bar"
-            - "I clicked the search button"
-            - "I'm looking at search results for keyboards"
-            - "I clicked on the wireless keyboard listing"
-            - "I added the item to my cart"
-
-            Important: Only provide a new description if the current screenshot shows a different step or state from the previous one. If the screenshot appears to be identical to the last one processed, do not generate a new description to avoid repetition.
-
-            Note: If consecutive but different screenshots show similar views with minimal changes, describe what is newly visible on the page rather than repeating the previous action.
+            Respond with ONLY the description, nothing else.
             """
         ]
 
-        raw = base64.b64decode(msg.image)
-        buf = BytesIO(raw)
-        file_ref = genai.upload_file(path=buf, mime_type="image/png")
-        prompt.append(file_ref)
+        # Process the image
+        try:
+            logger.debug(f"Processing image for {msg.step_info}")
+            raw = base64.b64decode(msg.image)
+            buf = BytesIO(raw)
+            file_ref = genai.upload_file(path=buf, mime_type="image/png")
+            prompt.append(file_ref)
 
-        resp = model.generate_content(prompt)
-        analysis = resp.text.strip()
-        ctx.logger.info(f"Detected actions: {analysis}")
-
-       
-        
-        # Initialize analysis_history if it doesn't exist
-        if not hasattr(theia, 'analysis_history'):
-            theia.analysis_history = []
+            # Measure API call time
+            api_start_time = time.time()
+            resp = model.generate_content(prompt)
+            api_end_time = time.time()
             
-        # Only send response if this analysis is new
-        if analysis not in theia.analysis_history:
-            await ctx.send(HERMES_ADDRESS, Response(text=analysis, agent_address=HERMES_ADDRESS))
-         # Store analysis in global array
+            analysis = resp.text.strip()
+            was_processed = True
+            
+            logger.info(f"Generated analysis ({api_end_time - api_start_time:.2f}s): {analysis}")
 
-        theia.analysis_history.append(analysis)
+            # Check if we should send this description
+            if should_generate_description(analysis):
+                global last_description_time
+                last_description_time = time.time()
+                
+                # Store analysis in history
+                analysis_history.append(analysis)
+                if len(analysis_history) > 5:  # Keep only last 5 analyses
+                    analysis_history.pop(0)
+                
+                # Create response for voice agent
+                vision_description = VisionDescription(
+                    description=analysis,
+                    timestamp=last_description_time,
+                    step_info=msg.step_info
+                )
+                
+                # Send to voice agent
+                await ctx.send(HERMES_ADDRESS, Response(
+                    text=analysis, 
+                    agent_address=ctx.agent.address
+                ))
+                
+                logger.info(f"Sent description to voice agent: {analysis}")
+            else:
+                logger.info(f"Skipped sending duplicate/similar analysis: {analysis}")
 
+        except Exception as upload_error:
+            logger.error(f"Error processing image: {upload_error}")
+            
     except Exception as e:
-        ctx.logger.error(f"Error in analyze: {e}")
+        logger.error(f"Error in analyze: {e}")
+    
+    finally:
+        # Update performance stats
+        end_time = time.time()
+        processing_time = end_time - start_time
+        api_time = api_end_time - api_start_time if api_start_time > 0 else 0
+        update_performance_stats(processing_time, api_time, was_processed)
 
 if __name__ == "__main__":
+    logger.info(f"Theia Vision Agent starting on port {theia.port}")
+    logger.info(f"Hermes address: {HERMES_ADDRESS}")
     theia.run()
